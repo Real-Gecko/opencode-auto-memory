@@ -3,6 +3,12 @@ name: release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Check auth and packaging without publishing
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -22,6 +28,7 @@ jobs:
           registry-url: https://registry.npmjs.org
       - run: bun install --frozen-lockfile
       - name: Tag must match package.json version
+        if: startsWith(github.ref, 'refs/tags/')
         run: |
           tag="${GITHUB_REF_NAME#v}"
           pkg="$(node -p "require('./package.json').version")"
@@ -32,6 +39,15 @@ jobs:
       - run: bun run typecheck
       - run: bun test
       - run: bun run build
-      - run: npm publish --provenance --access public
+      - name: Check auth and packaging only
+        if: inputs.dry_run
+        run: |
+          npm whoami
+          npm publish --dry-run --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publish
+        if: ${{ !inputs.dry_run }}
+        run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

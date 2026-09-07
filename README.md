@@ -82,6 +82,9 @@ npm version patch   # or minor / major
 git push --follow-tags
 ```
 
+Running the same workflow manually (`workflow_dispatch`) with `dry_run` left on
+checks the token with `npm whoami` and packs the tarball without publishing.
+
 ## Options
 
 | Option | Default | Meaning |
