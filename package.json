@@ -1,0 +1,32 @@
+{
+  "name": "opencode-auto-memory",
+  "version": "1.0.0",
+  "description": "Indexes opencode sessions into the personal-knowledge MCP store and injects relevant memory into new sessions",
+  "type": "module",
+  "main": "dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "bun build ./src/index.ts --outfile ./dist/index.js --target node",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "keywords": [
+    "opencode",
+    "plugin",
+    "memory",
+    "personal-knowledge",
+    "mcp"
+  ],
+  "author": "RealGecko",
+  "license": "MIT",
+  "devDependencies": {
+    "@opencode-ai/plugin": "1.18.29",
+    "@types/bun": "1.4.1",
+    "typescript": "5.9.3"
+  },
+  "opencode": {
+    "type": "plugin"
+  }
+}
