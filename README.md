@@ -78,17 +78,32 @@ Do not keep both entries; the same plugin would load twice.
 
 ## Releasing
 
-`.github/workflows/release.yml` publishes to npm when a `v*` tag is pushed, and
-refuses to publish if the tag does not match `package.json`. It needs an npm
-automation token in the repository secret `NPM_TOKEN`.
+`.github/workflows/release.yml` runs on a `v*` tag and refuses to go on if the tag
+does not match `package.json`. It authenticates to npm with OIDC ([trusted
+publishing](https://docs.npmjs.com/trusted-publishers)), so there is no token or
+repository secret; provenance is attached automatically.
 
 ```sh
 npm version patch   # or minor / major
 git push --follow-tags
 ```
 
-Running the same workflow manually (`workflow_dispatch`) with `dry_run` left on
-checks the token with `npm whoami` and packs the tarball without publishing.
+The trusted publisher is configured to allow `npm stage publish` only, so the
+workflow stages the version instead of publishing it. It goes live once a
+maintainer approves it with 2FA, from the Staged Packages tab on npmjs.com or:
+
+```sh
+npm stage list opencode-auto-memory
+npm stage approve <stage-id>
+```
+
+Running the workflow manually (`workflow_dispatch`) with `dry_run` left on builds
+and packs the tarball without staging anything.
+
+Requirements worth knowing if this breaks: OIDC needs npm >= 11.5.1, `npm stage
+publish` needs npm >= 11.15.0, both need a GitHub-hosted runner and
+`id-token: write`, and `repository.url` in `package.json` must match the GitHub
+repository exactly.
 
 ## Options
 

@@ -6,16 +6,17 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: Check auth and packaging without publishing
+        description: Build and verify the tarball without staging anything
         type: boolean
         default: true
 
 permissions:
   contents: read
-  id-token: write # npm provenance
+  id-token: write # OIDC token for npm trusted publishing
 
 jobs:
   publish:
+    # Trusted publishing only works on GitHub-hosted runners.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,8 +25,14 @@ jobs:
           bun-version: latest
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
           registry-url: https://registry.npmjs.org
+      # Node 24 ships npm 11.x, but `npm stage publish` needs >= 11.15.0 and OIDC
+      # needs >= 11.5.1, so pull the current npm rather than rely on the bundled one.
+      - name: Use a recent npm
+        run: |
+          npm install -g npm@latest
+          npm --version
       - run: bun install --frozen-lockfile
       - name: Tag must match package.json version
         if: startsWith(github.ref, 'refs/tags/')
@@ -39,15 +46,13 @@ jobs:
       - run: bun run typecheck
       - run: bun test
       - run: bun run build
-      - name: Check auth and packaging only
+      - name: Verify packaging only
         if: inputs.dry_run
-        run: |
-          npm whoami || echo "whoami not permitted by this token; not necessarily fatal for publish"
-          npm publish --dry-run --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      - name: Publish
+        run: npm publish --dry-run
+      # No NODE_AUTH_TOKEN: authentication is the OIDC token from id-token: write,
+      # and provenance is generated automatically for a public repo + public package.
+      # The trusted publisher on npmjs.com allows `npm stage publish` only, so this
+      # submits the version for review; approve it with 2FA to make it live.
+      - name: Stage publish
         if: ${{ !inputs.dry_run }}
-        run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm stage publish
