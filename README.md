@@ -88,9 +88,10 @@ npm version patch   # or minor / major
 git push --follow-tags
 ```
 
-The trusted publisher is configured to allow `npm stage publish` only, so the
-workflow stages the version instead of publishing it. It goes live once a
-maintainer approves it with 2FA, from the Staged Packages tab on npmjs.com or:
+The trusted publisher allows both `npm publish` and `npm stage publish`, and the
+workflow publishes directly. To add an approval gate instead, change the publish
+step to `npm stage publish`; the version then waits in the Staged Packages tab
+until a maintainer approves it with 2FA:
 
 ```sh
 npm stage list opencode-auto-memory
@@ -98,10 +99,10 @@ npm stage approve <stage-id>
 ```
 
 Running the workflow manually (`workflow_dispatch`) with `dry_run` left on builds
-and packs the tarball without staging anything.
+and packs the tarball without publishing.
 
-Requirements worth knowing if this breaks: OIDC needs npm >= 11.5.1, `npm stage
-publish` needs npm >= 11.15.0, both need a GitHub-hosted runner and
+Requirements worth knowing if this breaks: OIDC needs npm >= 11.5.1 (`npm stage
+publish` needs >= 11.15.0), both need a GitHub-hosted runner and
 `id-token: write`, and `repository.url` in `package.json` must match the GitHub
 repository exactly.
 

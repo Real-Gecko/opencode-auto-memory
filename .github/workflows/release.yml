@@ -27,8 +27,8 @@ jobs:
         with:
           node-version: "24"
           registry-url: https://registry.npmjs.org
-      # Node 24 ships npm 11.x, but `npm stage publish` needs >= 11.15.0 and OIDC
-      # needs >= 11.5.1, so pull the current npm rather than rely on the bundled one.
+      # Node 24 ships npm 11.x, but OIDC trusted publishing needs >= 11.5.1, so pull
+      # the current npm rather than rely on whatever is bundled.
       - name: Use a recent npm
         run: |
           npm install -g npm@latest
@@ -51,8 +51,8 @@ jobs:
         run: npm publish --dry-run
       # No NODE_AUTH_TOKEN: authentication is the OIDC token from id-token: write,
       # and provenance is generated automatically for a public repo + public package.
-      # The trusted publisher on npmjs.com allows `npm stage publish` only, so this
-      # submits the version for review; approve it with 2FA to make it live.
-      - name: Stage publish
+      # The trusted publisher on npmjs.com allows both `npm publish` and
+      # `npm stage publish`; swap the command below to stage for a 2FA approval step.
+      - name: Publish
         if: ${{ !inputs.dry_run }}
-        run: npm stage publish
+        run: npm publish
