@@ -180,4 +180,4 @@ a later `process.env.HOME`, so overriding `HOME` in a test does *not* isolate it
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
