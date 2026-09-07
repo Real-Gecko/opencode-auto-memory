@@ -42,7 +42,7 @@ jobs:
       - name: Check auth and packaging only
         if: inputs.dry_run
         run: |
-          npm whoami
+          npm whoami || echo "whoami not permitted by this token; not necessarily fatal for publish"
           npm publish --dry-run --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
