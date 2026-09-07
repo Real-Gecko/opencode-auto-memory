@@ -23,8 +23,40 @@ the tools available to the agent for reading and writing entries directly.
 
 ## Install
 
+```sh
+opencode plugin opencode-auto-memory -g
+```
+
+That resolves the package from npm, caches it under
+`~/.cache/opencode/packages/`, and adds it to `~/.config/opencode/opencode.json`.
+Or write the entry yourself:
+
 ```jsonc
 // ~/.config/opencode/opencode.jsonc
+{
+  "plugin": ["opencode-auto-memory"]
+}
+```
+
+With options:
+
+```jsonc
+{
+  "plugin": [["opencode-auto-memory", { "injectSemantic": false, "maxInjectEntries": 3 }]]
+}
+```
+
+Restart opencode afterwards: plugins are loaded once at startup.
+
+Installing straight from a git URL does not work — opencode installs plugins
+with npm and the git dependency preparation step fails, so the package has to
+come from the registry or from a local build.
+
+### From a local checkout
+
+For development, point the config at the built bundle:
+
+```jsonc
 {
   "plugin": ["file:///home/you/Development/opencode-auto-memory/dist/index.js"]
 }
@@ -37,19 +69,17 @@ bun install
 bun run build
 ```
 
-Restart opencode afterwards: plugins are loaded once at startup.
+Do not keep both entries; the same plugin would load twice.
 
-With options:
+## Releasing
 
-```jsonc
-{
-  "plugin": [
-    [
-      "file:///home/you/Development/opencode-auto-memory/dist/index.js",
-      { "injectSemantic": false, "maxInjectEntries": 3 }
-    ]
-  ]
-}
+`.github/workflows/release.yml` publishes to npm when a `v*` tag is pushed, and
+refuses to publish if the tag does not match `package.json`. It needs an npm
+automation token in the repository secret `NPM_TOKEN`.
+
+```sh
+npm version patch   # or minor / major
+git push --follow-tags
 ```
 
 ## Options

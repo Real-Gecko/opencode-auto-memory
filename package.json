@@ -12,6 +12,14 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Real-Gecko/opencode-auto-memory.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Real-Gecko/opencode-auto-memory/issues"
+  },
+  "homepage": "https://github.com/Real-Gecko/opencode-auto-memory#readme",
   "keywords": [
     "opencode",
     "plugin",
