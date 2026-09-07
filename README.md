@@ -34,9 +34,14 @@ Or write the entry yourself:
 ```jsonc
 // ~/.config/opencode/opencode.jsonc
 {
-  "plugin": ["opencode-auto-memory"]
+  "plugin": ["opencode-auto-memory@1.0.0"]
 }
 ```
+
+Pinning is worth it. The cache directory is keyed by the exact spec and the
+install is skipped when it already exists, so a bare `opencode-auto-memory`
+keeps running whatever version it first resolved; bumping a pinned version
+creates a new cache directory and actually upgrades.
 
 With options:
 
