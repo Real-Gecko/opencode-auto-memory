@@ -9,7 +9,7 @@ import {
   oncePerSession,
   type CaptureClient,
 } from "./capture.ts";
-import { resolveOptions } from "./config.ts";
+import { projectRootFrom, resolveOptions } from "./config.ts";
 import { buildKeywordPattern, hasSaveIntent, SAVE_NUDGE } from "./kb.ts";
 import { buildInjection } from "./inject.ts";
 import { dbg, setLogLimit } from "./logger.ts";
@@ -18,8 +18,7 @@ import { closeMcp } from "./mcp.ts";
 export const AutoMemoryPlugin: Plugin = async ({ client, directory, worktree }, pluginOptions) => {
   const options = resolveOptions(pluginOptions);
   setLogLimit(options.debugMaxBytes);
-  // `opencode run` can hand the plugin empty values, so fall back to the cwd.
-  const projectRoot = worktree || directory || process.cwd();
+  const projectRoot = projectRootFrom(worktree, directory);
   const projectName = basename(projectRoot);
   const keywordPattern = buildKeywordPattern(options.keywordPatterns);
   const captureClient = client as unknown as CaptureClient;

@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { homedir } from "node:os";
 
 /**
@@ -151,4 +151,20 @@ function isValidRegex(source: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Pick the directory whose name identifies the project. `opencode run` outside a
+ * repository hands the plugin `worktree: "/"` or an empty string, and basename of
+ * either is useless, so fall through to the next candidate.
+ */
+export function projectRootFrom(
+  worktree?: string,
+  directory?: string,
+  cwd: string = process.cwd(),
+): string {
+  for (const candidate of [worktree, directory, cwd]) {
+    if (candidate && basename(candidate)) return candidate;
+  }
+  return cwd;
 }

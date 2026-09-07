@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { DEFAULTS } from "../src/config.ts";
+import { DEFAULTS, projectRootFrom } from "../src/config.ts";
 import {
   buildKeywordPattern,
   formatContextBlock,
@@ -152,5 +152,23 @@ describe("rankProjectEntries", () => {
 
   test("keeps the original order when nothing scores", () => {
     expect(rankProjectEntries(entries, "unrelated").map((entry) => entry.id)).toEqual([43, 51, 37]);
+  });
+});
+
+describe("projectRootFrom", () => {
+  test("prefers the worktree", () => {
+    expect(projectRootFrom("/home/u/Development/proj", "/home/u/Development/proj/src")).toBe(
+      "/home/u/Development/proj",
+    );
+  });
+
+  test("skips a root with no usable name", () => {
+    expect(projectRootFrom("/", "/tmp/scratch", "/fallback")).toBe("/tmp/scratch");
+    expect(projectRootFrom("", "", "/fallback")).toBe("/fallback");
+    expect(projectRootFrom(undefined, undefined, "/fallback")).toBe("/fallback");
+  });
+
+  test("falls back when every candidate is unusable", () => {
+    expect(projectRootFrom("/", "/", "/")).toBe("/");
   });
 });
