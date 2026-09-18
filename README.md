@@ -76,36 +76,6 @@ bun run build
 
 Do not keep both entries; the same plugin would load twice.
 
-## Releasing
-
-`.github/workflows/release.yml` runs on a `v*` tag and refuses to go on if the tag
-does not match `package.json`. It authenticates to npm with OIDC ([trusted
-publishing](https://docs.npmjs.com/trusted-publishers)), so there is no token or
-repository secret; provenance is attached automatically.
-
-```sh
-npm version patch   # or minor / major
-git push --follow-tags
-```
-
-The trusted publisher allows both `npm publish` and `npm stage publish`, and the
-workflow publishes directly. To add an approval gate instead, change the publish
-step to `npm stage publish`; the version then waits in the Staged Packages tab
-until a maintainer approves it with 2FA:
-
-```sh
-npm stage list opencode-auto-memory
-npm stage approve <stage-id>
-```
-
-Running the workflow manually (`workflow_dispatch`) with `dry_run` left on builds
-and packs the tarball without publishing.
-
-Requirements worth knowing if this breaks: OIDC needs npm >= 11.5.1 (`npm stage
-publish` needs >= 11.15.0), both need a GitHub-hosted runner and
-`id-token: write`, and `repository.url` in `package.json` must match the GitHub
-repository exactly.
-
 ## Options
 
 | Option | Default | Meaning |
@@ -124,7 +94,7 @@ repository exactly.
 | `injectExcerptChars` | `220` | Max characters of each excerpt |
 | `keywordNudge` | `true` | Remind the agent to save when the user says "remember this" |
 | `keywordPatterns` | `[]` | Extra save-intent regex sources |
-| `autoRedact` | `true` | Redact obviously secret values (tokens, passwords, keys, JWTs, private key blocks) before storage |
+| `autoRedact` | `true` | Redact obviously secret values (tokens, passwords, keys, JWTs, private key blocks, URL userinfo) before storage |
 | `debugMaxBytes` | `1048576` | Rotate the debug log past this size |
 
 ## Files
@@ -148,9 +118,10 @@ cannot feed its own results back into the store.
 On top of that, `autoRedact` (on by default) redacts values that obviously look
 like secrets even when the model forgot to mark them: values following a
 secret-like name (`token`, `password`, `api_key`, `client_secret`, ...), bearer
-tokens, JWTs, and private key blocks. Detection is deliberately context-based —
-a bare high-entropy string (commit hash, id, example) is left alone — so it is a
-safety net, not a guarantee.
+tokens, JWTs, private key blocks, and credentials embedded in a URL
+(`scheme://user:pass@host`, where the scheme and host are kept). Detection is
+deliberately context-based — a bare high-entropy string (commit hash, id,
+example) is left alone — so it is a safety net, not a guarantee.
 
 ## Behaviour worth knowing
 

@@ -22,7 +22,8 @@ export function isFullyPrivate(content: string): boolean {
  * survives so memory keeps the *fact* that a credential was set.
  */
 export function autoRedactSecrets(content: string): string {
-  let out = content.replace(SECRET_PAIR, (_m, key, q1, pre, sep, ws, q2, _value) =>
+  let out = content.replace(URL_USERINFO, "$1[REDACTED]@");
+  out = out.replace(SECRET_PAIR, (_m, key, q1, pre, sep, ws, q2, _value) =>
     `${key}${q1}${pre}${sep}${ws}${q2}[REDACTED]`,
   );
   out = out.replace(PREFIXED_SECRET, "[REDACTED]");
@@ -56,3 +57,11 @@ const JWT_TOKEN = /\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\
 /** PEM / OpenSSH / encrypted private key blocks, which can span lines. */
 const PRIVATE_KEY_BLOCK =
   /-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----/gi;
+
+/**
+ * Credentials embedded in a URL: `scheme://user:pass@host...`. Only the userinfo
+ * (`user:pass@`) is replaced, the scheme and everything after the `@` stays, so
+ * ephemeral hosts and ports (which may be no secret at all) survive intact.
+ */
+const URL_USERINFO =
+  /([a-z][a-z0-9+.-]*:\/\/)[^@\s/:]+:[^@\s/:]*@/gi;

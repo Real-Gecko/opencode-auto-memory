@@ -50,6 +50,27 @@ describe("autoRedactSecrets", () => {
     expect(autoRedactSecrets(key)).toBe("[REDACTED]");
   });
 
+  test("redacts URL userinfo and keeps scheme and host", () => {
+    expect(autoRedactSecrets("rtsp://user:pass@192.168.210.10:554/live")).toBe(
+      "rtsp://[REDACTED]@192.168.210.10:554/live",
+    );
+    expect(autoRedactSecrets("postgresql://admin:hunter2@db:5432/catalog")).toBe(
+      "postgresql://[REDACTED]@db:5432/catalog",
+    );
+    expect(autoRedactSecrets("https://token:abcdef12345678@example.com/x")).toBe(
+      "https://[REDACTED]@example.com/x",
+    );
+  });
+
+  test("leaves URLs without credentials alone", () => {
+    expect(autoRedactSecrets("http://10.0.9.13:8000 ok")).toBe("http://10.0.9.13:8000 ok");
+    expect(autoRedactSecrets("rtsp://camera1:554/live")).toBe("rtsp://camera1:554/live");
+    expect(autoRedactSecrets("wss://user@example.com/x")).toBe("wss://user@example.com/x");
+    expect(autoRedactSecrets("backup to rtsp://192.168.210.10:554 ok")).toBe(
+      "backup to rtsp://192.168.210.10:554 ok",
+    );
+  });
+
   test("redacts several in one text and plays nice with markers", () => {
     expect(autoRedactSecrets("a=1 token=xhlH9ajLpM token=yqK3mWd8xR")).toBe(
       "a=1 token=[REDACTED] token=[REDACTED]",
