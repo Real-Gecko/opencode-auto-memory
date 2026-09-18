@@ -73,6 +73,13 @@ export interface AutoMemoryOptions {
   keywordNudge: boolean;
   /** Extra regex sources appended to the built-in save-intent patterns. */
   keywordPatterns: string[];
+  /**
+   * Best-effort redaction of obviously secret values before storage. Only values
+   * sitting next to a secret-like name (`token`, `password`, `api_key`, ...),
+   * bearer tokens, JWTs and private key blocks are redacted; unqualified
+   * high-entropy strings are left alone to avoid destroying legit memory.
+   */
+  autoRedact: boolean;
   /** Rotate the debug log past this size. */
   debugMaxBytes: number;
 }
@@ -92,6 +99,7 @@ export const DEFAULTS: AutoMemoryOptions = {
   injectExcerptChars: 220,
   keywordNudge: true,
   keywordPatterns: [],
+  autoRedact: true,
   debugMaxBytes: 1024 * 1024,
 };
 
@@ -112,6 +120,7 @@ const BOOLEAN_KEYS = [
   "injectContext",
   "injectSemantic",
   "keywordNudge",
+  "autoRedact",
 ] as const satisfies ReadonlyArray<keyof AutoMemoryOptions>;
 
 /**

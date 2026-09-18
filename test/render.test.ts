@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { DEFAULTS } from "../src/config.ts";
-import { isFullyPrivate, stripPrivate } from "../src/privacy.ts";
+import { autoRedactSecrets, isFullyPrivate, stripPrivate } from "../src/privacy.ts";
 import { renderParts, renderToolPart, type MessagePart } from "../src/render.ts";
 
 describe("privacy", () => {
@@ -16,6 +16,45 @@ describe("privacy", () => {
   test("detects a fully private message", () => {
     expect(isFullyPrivate("<private>everything</private>")).toBe(true);
     expect(isFullyPrivate("visible <private>hidden</private>")).toBe(false);
+  });
+});
+
+describe("autoRedactSecrets", () => {
+  test("redacts values next to secret-like keys and keeps the key", () => {
+    expect(autoRedactSecrets("token = sk-abcdef123456")).toBe("token = [REDACTED]");
+    expect(autoRedactSecrets('"apiKey": "AbCdEf12345678"')).toBe('"apiKey": "[REDACTED]"');
+  });
+
+  test("is case and spacing tolerant", () => {
+    expect(autoRedactSecrets("PASSWORD: hunter2hunter")).toBe("PASSWORD: [REDACTED]");
+    expect(autoRedactSecrets("access-key AKIAEXAMPLEKEY12345")).toBe("access-key [REDACTED]");
+    expect(autoRedactSecrets('clientSecret = "xyz123456789ab"')).toBe(
+      'clientSecret = "[REDACTED]"',
+    );
+  });
+
+  test("leaves short or unqualified values alone", () => {
+    expect(autoRedactSecrets("secret = hunt")).toBe("secret = hunt");
+    expect(autoRedactSecrets("the answer is 42")).toBe("the answer is 42");
+    expect(autoRedactSecrets("mapping: {a: 1}")).toBe("mapping: {a: 1}");
+    expect(autoRedactSecrets("commit abcdef0123456789")).toBe("commit abcdef0123456789");
+  });
+
+  test("redacts bearer tokens, JWTs and private key blocks", () => {
+    const header = "Authorization: Bearer ghp_abcdefghijklmnopqrstuvwxyzABCDE";
+    expect(autoRedactSecrets(header)).toBe("Authorization: Bearer [REDACTED]");
+    expect(autoRedactSecrets("jwt=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.SflKxwRJSMew")).toBe(
+      "jwt=[REDACTED]",
+    );
+    const key = "-----BEGIN RSA PRIVATE KEY-----\nMIIBOgKB\n-----END RSA PRIVATE KEY-----";
+    expect(autoRedactSecrets(key)).toBe("[REDACTED]");
+  });
+
+  test("redacts several in one text and plays nice with markers", () => {
+    expect(autoRedactSecrets("a=1 token=xhlH9ajLpM token=yqK3mWd8xR")).toBe(
+      "a=1 token=[REDACTED] token=[REDACTED]",
+    );
+    expect(autoRedactSecrets("token = [REDACTED]")).toBe("token = [REDACTED]");
   });
 });
 
@@ -76,5 +115,45 @@ describe("renderParts", () => {
 
   test("drops a fully private message body", () => {
     expect(renderParts([{ type: "text", text: "<private>all of it</private>" }], DEFAULTS)).toBe("");
+  });
+});
+
+describe("autoRedact in rendering", () => {
+  test("redacts secrets from tool input when enabled", () => {
+    const part: MessagePart = {
+      type: "tool",
+      tool: "bash",
+      state: {
+        status: "completed",
+        title: "curl",
+        input: { command: "curl -H 'Authorization: Bearer sk-abcdefghijklmnop12345678' https://x" },
+      },
+    };
+    const rendered = renderToolPart(part, DEFAULTS);
+    expect(rendered).not.toContain("sk-abcdefghijklmnop12345678");
+    expect(rendered).toContain("[REDACTED]");
+  });
+
+  test("leaves them alone when disabled", () => {
+    const part: MessagePart = {
+      type: "tool",
+      tool: "bash",
+      state: {
+        status: "completed",
+        title: "curl",
+        input: { command: "curl -H 'Authorization: Bearer sk-abcdefghijklmnop12345678' https://x" },
+      },
+    };
+    const rendered = renderToolPart(part, { ...DEFAULTS, autoRedact: false });
+    expect(rendered).toContain("sk-abcdefghijklmnop12345678");
+    expect(rendered).not.toContain("[REDACTED]");
+  });
+
+  test("redacts secrets from text blocks", () => {
+    const rendered = renderParts(
+      [{ type: "text", text: "posted key sk-abcdefghijklmnop12345678 to prod" }],
+      DEFAULTS,
+    );
+    expect(rendered).not.toContain("sk-abcdefghijklmnop12345678");
   });
 });

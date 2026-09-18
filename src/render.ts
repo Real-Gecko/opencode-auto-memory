@@ -1,5 +1,5 @@
 import type { AutoMemoryOptions } from "./config.ts";
-import { isFullyPrivate, stripPrivate } from "./privacy.ts";
+import { autoRedactSecrets, isFullyPrivate, stripPrivate } from "./privacy.ts";
 
 /**
  * Structural subset of the SDK's Part union. Kept local so a change in an
@@ -31,6 +31,7 @@ export function renderToolPart(part: MessagePart, options: AutoMemoryOptions): s
   const name = part.tool ?? "unknown";
   const header = state.title ? `[tool: ${name}] ${state.title}` : `[tool: ${name}]`;
   const lines = [header];
+  const finish = (text: string) => (options.autoRedact ? autoRedactSecrets(text) : text);
 
   const input = state.input;
   if (input && Object.keys(input).length > 0) {
@@ -40,7 +41,7 @@ export function renderToolPart(part: MessagePart, options: AutoMemoryOptions): s
   // Recording what the knowledge base returned would store its own search
   // results back into it, so each lookup compounds as noise. Keep the query.
   if (name.includes("personal-knowledge")) {
-    return lines.join("\n");
+    return finish(lines.join("\n"));
   }
 
   if (state.status === "error") {
@@ -53,7 +54,7 @@ export function renderToolPart(part: MessagePart, options: AutoMemoryOptions): s
     lines.push(`status: ${state.status}`);
   }
 
-  return lines.join("\n");
+  return finish(lines.join("\n"));
 }
 
 /**
@@ -72,7 +73,9 @@ export function renderParts(
       const text = part.text?.trim();
       if (!text) continue;
       if (isFullyPrivate(text)) continue;
-      blocks.push(stripPrivate(text).trim());
+      let cleaned = stripPrivate(text).trim();
+      if (options.autoRedact) cleaned = autoRedactSecrets(cleaned);
+      blocks.push(cleaned);
     } else if (part.type === "tool") {
       blocks.push(renderToolPart(part, options));
     }

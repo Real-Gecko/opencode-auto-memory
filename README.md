@@ -124,6 +124,7 @@ repository exactly.
 | `injectExcerptChars` | `220` | Max characters of each excerpt |
 | `keywordNudge` | `true` | Remind the agent to save when the user says "remember this" |
 | `keywordPatterns` | `[]` | Extra save-intent regex sources |
+| `autoRedact` | `true` | Redact obviously secret values (tokens, passwords, keys, JWTs, private key blocks) before storage |
 | `debugMaxBytes` | `1048576` | Rotate the debug log past this size |
 
 ## Files
@@ -143,6 +144,13 @@ Anything inside `<private>...</private>` is replaced with `[REDACTED]` before a
 message is stored, and a message that is nothing but a private span is not stored
 at all. Output of the `personal-knowledge` tools is never stored, so a search
 cannot feed its own results back into the store.
+
+On top of that, `autoRedact` (on by default) redacts values that obviously look
+like secrets even when the model forgot to mark them: values following a
+secret-like name (`token`, `password`, `api_key`, `client_secret`, ...), bearer
+tokens, JWTs, and private key blocks. Detection is deliberately context-based —
+a bare high-entropy string (commit hash, id, example) is left alone — so it is a
+safety net, not a guarantee.
 
 ## Behaviour worth knowing
 
