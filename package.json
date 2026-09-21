@@ -1,6 +1,6 @@
 {
   "name": "opencode-auto-memory",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Indexes opencode sessions into the personal-knowledge MCP store and injects relevant memory into new sessions",
   "type": "module",
   "main": "dist/index.js",

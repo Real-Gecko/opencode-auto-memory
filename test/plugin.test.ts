@@ -194,4 +194,50 @@ describe("V2 plugin lifecycle", () => {
     await cleanup?.();
     expect(contextCalls).toBe(3);
   });
+
+  test("debounces content updates when idle events are unavailable", async () => {
+    let contextCalls = 0;
+    let finishEventLoop: (() => void) | undefined;
+    const eventLoopFinished = new Promise<void>((resolve) => {
+      finishEventLoop = resolve;
+    });
+
+    const context = {
+      options: { injectContext: false, keywordNudge: false },
+      location: { directory: "/w", project: { id: "p", directory: "/w", canonical: "/w" } },
+      session: {
+        hook: async () => {},
+        get: async ({ sessionID }: { sessionID: string }) => ({ id: sessionID }),
+        context: async () => {
+          contextCalls += 1;
+          return [];
+        },
+      },
+      event: {
+        subscribe: async function* () {
+          yield {
+            id: "content-1",
+            created: 1,
+            type: "session.message.content.updated",
+            data: { sessionID: "s" },
+          };
+          yield {
+            id: "content-2",
+            created: 2,
+            type: "session.message.content.updated",
+            data: { sessionID: "s" },
+          };
+          finishEventLoop?.();
+        },
+      },
+    };
+
+    const cleanup = await AutoMemoryPlugin.setup(context as unknown as Plugin.Context);
+    await eventLoopFinished;
+    await Bun.sleep(650);
+    expect(contextCalls).toBe(1);
+
+    await cleanup?.();
+    expect(contextCalls).toBe(2);
+  });
 });

@@ -15,6 +15,9 @@ import { buildInjection } from "./inject.ts";
 import { dbg, setLogLimit } from "./logger.ts";
 import { closeMcp } from "./mcp.ts";
 
+/** Wait for a quiet period after streaming content before capturing. */
+const CAPTURE_DEBOUNCE_MS = 500;
+
 /**
  * V2 plugin definition. `Plugin.define` is the identity function, so a plain
  * `{ id, setup }` default export is exactly what the V2 loader registers — and
@@ -34,6 +37,8 @@ export default {
     const touched = new Set<string>();
     /** Sessions already given a context block by this process. */
     const injected = new Set<string>();
+    /** Debounced fallback timers for builds that do not emit session.idle. */
+    const captureTimers = new Map<string, ReturnType<typeof setTimeout>>();
     let flushed = false;
 
     dbg(
@@ -50,12 +55,29 @@ export default {
     };
 
     const onIdle = async (sessionID: string, source: string) => {
+      const timer = captureTimers.get(sessionID);
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        captureTimers.delete(sessionID);
+      }
       touched.add(sessionID);
       dbg(`event received: ${source}`);
       // Persisted message IDs make sequential idle notifications idempotent,
       // while oncePerSession coalesces notifications that overlap. Do not keep a
       // transition marker: legacy streams provide no reliable busy boundary.
       await oncePerSession(sessionID, () => handleIdle(captureClient, sessionID, options));
+    };
+
+    const scheduleCapture = (sessionID: string) => {
+      const previous = captureTimers.get(sessionID);
+      if (previous !== undefined) clearTimeout(previous);
+      captureTimers.set(
+        sessionID,
+        setTimeout(() => {
+          captureTimers.delete(sessionID);
+          void onIdle(sessionID, "debounced session.message.content.updated");
+        }, CAPTURE_DEBOUNCE_MS),
+      );
     };
 
     // Recall + save-intent nudge: V2's prompt hook is the durable-admission
@@ -113,7 +135,14 @@ export default {
 
           if (type === "session.message.content.updated") {
             const sessionID = data.sessionID as string | undefined;
-            if (sessionID) touched.add(sessionID);
+            if (sessionID) {
+              touched.add(sessionID);
+              // V2 currently emits this live even when session.idle/status is
+              // only present in the schema. Debouncing avoids hammering MCP
+              // while an assistant response is streaming, and handleIdle's
+              // isReady check skips incomplete assistant messages.
+              scheduleCapture(sessionID);
+            }
             continue;
           }
 
@@ -138,6 +167,9 @@ export default {
             const sessionID = data.sessionID as string | undefined;
             if (!sessionID) continue;
             dbg("event received: session.deleted");
+            const timer = captureTimers.get(sessionID);
+            if (timer !== undefined) clearTimeout(timer);
+            captureTimers.delete(sessionID);
             touched.delete(sessionID);
             await handleDeleted(sessionID, options);
           }
@@ -150,6 +182,8 @@ export default {
     return async () => {
       dbg("plugin dispose");
       controller.abort();
+      for (const timer of captureTimers.values()) clearTimeout(timer);
+      captureTimers.clear();
       await flush();
       closeMcp();
     };
