@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 
-import type { Plugin } from "@opencode-ai/plugin";
+import type { Plugin } from "@opencode/plugin";
 
 import {
   flushSessions,
@@ -15,129 +15,143 @@ import { buildInjection } from "./inject.ts";
 import { dbg, setLogLimit } from "./logger.ts";
 import { closeMcp } from "./mcp.ts";
 
-export const AutoMemoryPlugin: Plugin = async ({ client, directory, worktree }, pluginOptions) => {
-  const options = resolveOptions(pluginOptions);
-  setLogLimit(options.debugMaxBytes);
-  const projectRoot = projectRootFrom(worktree, directory);
-  const projectName = basename(projectRoot);
-  const keywordPattern = buildKeywordPattern(options.keywordPatterns);
-  const captureClient = client as unknown as CaptureClient;
+/**
+ * V2 plugin definition. `Plugin.define` is the identity function, so a plain
+ * `{ id, setup }` default export is exactly what the V2 loader registers — and
+ * it keeps the bundle free of the SDK's dependency graph.
+ */
+export default {
+  id: "auto-memory",
+  async setup(ctx: Plugin.Context) {
+    const options = resolveOptions(ctx.options);
+    setLogLimit(options.debugMaxBytes);
+    const projectRoot = projectRootFrom(ctx.location.project.directory, ctx.location.directory);
+    const projectName = basename(projectRoot);
+    const keywordPattern = buildKeywordPattern(options.keywordPatterns);
+    const captureClient = ctx as unknown as CaptureClient;
 
-  /** Sessions this process has touched, for the shutdown flush. */
-  const touched = new Set<string>();
-  /** Sessions already given a context block by this process. */
-  const injected = new Set<string>();
-  let flushed = false;
+    /** Sessions this process has touched, for the shutdown flush. */
+    const touched = new Set<string>();
+    /** Sessions already given a context block by this process. */
+    const injected = new Set<string>();
+    let flushed = false;
 
-  dbg(
-    `plugin loaded project="${projectName}" root="${projectRoot}" ` +
-      `(worktree="${worktree ?? ""}" directory="${directory ?? ""}") inject=${options.injectContext}`,
-  );
+    dbg(
+      `plugin loaded project="${projectName}" root="${projectRoot}" ` +
+        `(directory="${ctx.location.directory}") inject=${options.injectContext}`,
+    );
 
-  const flush = async () => {
-    if (flushed) return;
-    flushed = true;
-    if (touched.size === 0) return;
-    dbg(`flush: draining ${touched.size} session(s)`);
-    await flushSessions(captureClient, [...touched], options);
-  };
+    const flush = async () => {
+      if (flushed) return;
+      flushed = true;
+      if (touched.size === 0) return;
+      dbg(`flush: draining ${touched.size} session(s)`);
+      await flushSessions(captureClient, [...touched], options);
+    };
 
-  return {
-    "chat.message": async (input, output) => {
+    const onIdle = async (sessionID: string, source: string) => {
+      touched.add(sessionID);
+      dbg(`event received: ${source}`);
+      // Persisted message IDs make sequential idle notifications idempotent,
+      // while oncePerSession coalesces notifications that overlap. Do not keep a
+      // transition marker: legacy streams provide no reliable busy boundary.
+      await oncePerSession(sessionID, () => handleIdle(captureClient, sessionID, options));
+    };
+
+    // Recall + save-intent nudge: V2's prompt hook is the durable-admission
+    // equivalent of V1's chat.message. User messages are plain text in V2, so
+    // the context block and nudge become part of the admitted prompt text.
+    // renderParts strips our own markers so capture never stores them back.
+    await ctx.session.hook("prompt", async (event) => {
       try {
-        const sessionID = input.sessionID;
-        if (!sessionID) return;
+        const sessionID = event.sessionID;
         touched.add(sessionID);
 
-        const userText = output.parts
-          .filter((part) => part.type === "text" && !part.synthetic)
-          .map((part) => (part as { text?: string }).text ?? "")
-          .join("\n")
-          .trim();
+        const userText = (event.prompt.text ?? "").trim();
 
         if (options.keywordNudge && userText && hasSaveIntent(userText, keywordPattern)) {
-          dbg("chat.message: save intent detected");
-          output.parts.push({
-            id: `prt_auto-memory-nudge-${Date.now()}`,
-            sessionID,
-            messageID: output.message.id,
-            type: "text",
-            text: SAVE_NUDGE,
-            synthetic: true,
-          });
+          dbg("prompt: save intent detected");
+          event.prompt.text = `${event.prompt.text}\n\n${SAVE_NUDGE}`;
         }
 
         if (!options.injectContext || injected.has(sessionID)) return;
-        // Claim the session before awaiting, so two messages in flight cannot
+        // Claim the session before awaiting, so two prompts in flight cannot
         // both inject.
         injected.add(sessionID);
 
-        const sessionRes = await captureClient.session.get({ path: { id: sessionID } });
-        if (sessionRes?.data?.parentID) {
-          dbg("chat.message: skip injection for subagent session");
+        const session = await captureClient.session.get({ sessionID });
+        if (session?.parentID) {
+          dbg("prompt: skip injection for subagent session");
           return;
         }
 
         const started = Date.now();
         const block = await buildInjection(projectName, userText, options);
         if (!block) {
-          dbg(`chat.message: nothing to inject (${Date.now() - started}ms)`);
+          dbg(`prompt: nothing to inject (${Date.now() - started}ms)`);
           return;
         }
 
-        output.parts.unshift({
-          id: `prt_auto-memory-context-${Date.now()}`,
-          sessionID,
-          messageID: output.message.id,
-          type: "text",
-          text: block,
-          synthetic: true,
-        });
-        dbg(`chat.message: injected ${block.length} chars in ${Date.now() - started}ms`);
+        event.prompt.text = `${block}\n\n${event.prompt.text}`;
+        dbg(`prompt: injected ${block.length} chars in ${Date.now() - started}ms`);
       } catch (error) {
-        dbg(`chat.message ERROR: ${(error as Error)?.message ?? error}`);
+        dbg(`prompt ERROR: ${(error as Error)?.message ?? error}`);
       }
-    },
+    });
 
-    event: async (input) => {
-      const type: string = input.event.type;
-      const properties = (input.event as { properties?: Record<string, unknown> }).properties ?? {};
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+          const type = typeof (event as { type?: unknown }).type === "string"
+            ? (event as { type: string }).type
+            : "";
+          const data = ((event as { data?: Record<string, unknown> }).data ?? {}) as Record<
+            string,
+            unknown
+          >;
 
-      if (type === "message.updated") {
-        const info = properties.info as { sessionID?: string } | undefined;
-        if (info?.sessionID) touched.add(info.sessionID);
-        return;
+          if (type === "session.message.content.updated") {
+            const sessionID = data.sessionID as string | undefined;
+            if (sessionID) touched.add(sessionID);
+            continue;
+          }
+
+          if (type === "session.idle") {
+            const sessionID = data.sessionID as string | undefined;
+            if (!sessionID) continue;
+            await onIdle(sessionID, "session.idle");
+            continue;
+          }
+
+          if (type === "session.status") {
+            const sessionID = data.sessionID as string | undefined;
+            const status = data.status as { type?: string } | undefined;
+            if (!sessionID) continue;
+            if (status?.type === "idle") {
+              await onIdle(sessionID, "session.status (idle)");
+            }
+            continue;
+          }
+
+          if (type === "session.deleted") {
+            const sessionID = data.sessionID as string | undefined;
+            if (!sessionID) continue;
+            dbg("event received: session.deleted");
+            touched.delete(sessionID);
+            await handleDeleted(sessionID, options);
+          }
+        }
+      } catch (error) {
+        dbg(`event loop ended: ${(error as Error)?.message ?? error}`);
       }
+    })();
 
-      if (type === "session.idle") {
-        const sessionID = properties.sessionID as string | undefined;
-        if (!sessionID) return;
-        dbg("event received: session.idle");
-        touched.add(sessionID);
-        await oncePerSession(sessionID, () => handleIdle(captureClient, sessionID, options));
-        return;
-      }
-
-      if (type === "session.deleted") {
-        const info = properties.info as { id?: string } | undefined;
-        const sessionID = (properties.sessionID as string | undefined) ?? info?.id;
-        if (!sessionID) return;
-        dbg("event received: session.deleted");
-        touched.delete(sessionID);
-        await handleDeleted(sessionID, options);
-        return;
-      }
-
-      if (type === "server.instance.disposed") {
-        dbg("event received: server.instance.disposed");
-        await flush();
-      }
-    },
-
-    dispose: async () => {
+    return async () => {
       dbg("plugin dispose");
+      controller.abort();
       await flush();
       closeMcp();
-    },
-  };
+    };
+  },
 };

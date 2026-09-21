@@ -5,40 +5,84 @@ import { renderParts, type MessagePart } from "./render.ts";
 import { clip } from "./render.ts";
 import { commitSession, forgetSession, loadState } from "./state.ts";
 
-interface MessageInfo {
-  id: string;
-  role: string;
-  summary?: boolean;
-  time?: { created?: number; completed?: number };
-}
-
-interface SessionMessage {
-  info: MessageInfo;
-  parts?: MessagePart[];
-}
-
 interface SessionInfo {
   id: string;
   title?: string;
   parentID?: string;
 }
 
-/** The parts of the opencode client this module needs. */
+interface ToolState {
+  status?: string;
+  title?: string;
+  input?: Record<string, unknown>;
+  content?: Array<{ type?: string; text?: string }>;
+  error?: string | { message?: string };
+}
+
+interface MessageContent {
+  type?: string;
+  text?: string;
+  name?: string;
+  state?: ToolState;
+}
+
+/**
+ * Structural subset of the V2 SessionMessageInfo union this module needs.
+ * Kept local so a change in an unrelated message type cannot break the build.
+ */
+export interface SessionMessage {
+  id: string;
+  type?: string;
+  time?: { created?: number; completed?: number };
+  text?: string;
+  content?: MessageContent[];
+}
+
+/** The parts of the V2 plugin context this module needs. */
 export interface CaptureClient {
   session: {
-    get: (args: { path: { id: string } }) => Promise<{ data?: SessionInfo } | undefined>;
-    messages: (args: { path: { id: string } }) => Promise<{ data?: SessionMessage[] } | undefined>;
+    get: (args: { sessionID: string }) => Promise<SessionInfo | undefined>;
+    context: (args: { sessionID: string }) => Promise<SessionMessage[] | undefined>;
   };
 }
 
 /**
- * An assistant message without a completion timestamp is still streaming. Left
- * unlogged it is simply picked up by the next idle, so nothing is lost.
+ * A compaction summary or a still-streaming assistant message is not ready.
+ * An incomplete assistant message is simply picked up by the next idle, so
+ * nothing is lost.
  */
-function isReady(info: MessageInfo): boolean {
-  if (info.summary === true) return false;
-  if (info.role !== "assistant") return true;
-  return typeof info.time?.completed === "number";
+function isReady(msg: SessionMessage): boolean {
+  if (msg.type === "compaction") return false;
+  if (msg.type !== "assistant") return true;
+  return typeof msg.time?.completed === "number";
+}
+
+/** Map a V2 message to the part list renderParts understands. */
+function toParts(msg: SessionMessage): MessagePart[] {
+  if (msg.type === "user") {
+    return msg.text ? [{ type: "text", text: msg.text }] : [];
+  }
+  if (msg.type !== "assistant") return [];
+  const parts: MessagePart[] = [];
+  for (const item of msg.content ?? []) {
+    if (item.type === "text" && item.text) {
+      parts.push({ type: "text", text: item.text });
+    } else if (item.type === "tool") {
+      const state = item.state ?? {};
+      parts.push({
+        type: "tool",
+        name: item.name,
+        state: {
+          status: state.status,
+          title: state.title,
+          input: state.input,
+          content: state.content,
+          error: state.error,
+        },
+      });
+    }
+  }
+  return parts;
 }
 
 const inFlight = new Map<string, Promise<void>>();
@@ -66,11 +110,10 @@ export async function handleIdle(
   try {
     const entry = loadState().sessions[sessionID];
 
-    const sessionRes = await dbgAwait("session.get", client.session.get({ path: { id: sessionID } }));
-    const session = sessionRes?.data;
+    const session = await dbgAwait("session.get", client.session.get({ sessionID }));
     dbg(
       `session: ${JSON.stringify(
-        session ? { id: session.id, title: session.title, parentID: session.parentID } : sessionRes,
+        session ? { id: session.id, title: session.title, parentID: session.parentID } : session,
       )}`,
     );
     if (session?.parentID) {
@@ -78,16 +121,12 @@ export async function handleIdle(
       return;
     }
 
-    const messagesRes = await dbgAwait(
-      "session.messages",
-      client.session.messages({ path: { id: sessionID } }),
-    );
-    const messages = messagesRes?.data ?? [];
+    const messages = (await dbgAwait("session.context", client.session.context({ sessionID }))) ?? [];
     dbg(`messages: ${messages.length}`);
 
     let kbSessionID = entry?.kbSessionID;
     const logged = new Set(entry?.logged ?? []);
-    const newMessages = messages.filter((msg) => !logged.has(msg.info.id) && isReady(msg.info));
+    const newMessages = messages.filter((msg) => !logged.has(msg.id) && isReady(msg));
     dbg(`newMessages: ${newMessages.length}`);
     if (newMessages.length === 0) {
       dbg("no new messages, return");
@@ -121,10 +160,10 @@ export async function handleIdle(
     dbg(`kbSessionID=${kbSessionID}`);
 
     for (const msg of newMessages) {
-      const role = msg.info.role === "user" ? "user" : "agent";
-      const content = renderParts(msg.parts, options);
+      const role = msg.type === "user" ? "user" : "agent";
+      const content = renderParts(toParts(msg), options);
       if (!content.trim()) {
-        logged.add(msg.info.id);
+        logged.add(msg.id);
         persist();
         continue;
       }
@@ -150,13 +189,13 @@ export async function handleIdle(
       }
 
       if (reply.startsWith("❌")) {
-        dbg(`log_message failed for ${msg.info.id}: ${reply}`);
+        dbg(`log_message failed for ${msg.id}: ${reply}`);
         continue;
       }
       if (!reply.startsWith("📝")) {
-        dbg(`log_message unexpected reply for ${msg.info.id}: ${reply.slice(0, 200)}`);
+        dbg(`log_message unexpected reply for ${msg.id}: ${reply.slice(0, 200)}`);
       }
-      logged.add(msg.info.id);
+      logged.add(msg.id);
       persist();
     }
     dbg(`logged ${logged.size} total`);

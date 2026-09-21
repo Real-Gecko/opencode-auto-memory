@@ -82,8 +82,13 @@ describe("autoRedactSecrets", () => {
 describe("renderToolPart", () => {
   const bash: MessagePart = {
     type: "tool",
-    tool: "bash",
-    state: { status: "completed", title: "echo", input: { command: "echo hi" }, output: "hi" },
+    name: "bash",
+    state: {
+      status: "completed",
+      title: "echo",
+      input: { command: "echo hi" },
+      content: [{ type: "text", text: "hi" }],
+    },
   };
 
   test("keeps the call and drops the output by default", () => {
@@ -98,11 +103,11 @@ describe("renderToolPart", () => {
     expect(renderToolPart(bash, { ...DEFAULTS, captureToolOutput: true })).toContain("output: hi");
   });
 
-  test("keeps a clipped error reason", () => {
+  test("keeps a clipped error reason (structured V2 error)", () => {
     const part: MessagePart = {
       type: "tool",
-      tool: "read",
-      state: { status: "error", error: "x".repeat(500) },
+      name: "read",
+      state: { status: "error", error: { message: "x".repeat(500) } },
     };
     const rendered = renderToolPart(part, DEFAULTS);
     expect(rendered).toContain("error: ");
@@ -112,8 +117,12 @@ describe("renderToolPart", () => {
   test("never records knowledge-base tool output", () => {
     const part: MessagePart = {
       type: "tool",
-      tool: "personal-knowledge_search_knowledge",
-      state: { status: "completed", input: { query: "merge" }, output: "SECRET_RESULTS" },
+      name: "personal-knowledge_search_knowledge",
+      state: {
+        status: "completed",
+        input: { query: "merge" },
+        content: [{ type: "text", text: "SECRET_RESULTS" }],
+      },
     };
     const rendered = renderToolPart(part, { ...DEFAULTS, captureToolOutput: true });
     expect(rendered).toContain('input: {"query":"merge"}');
@@ -128,7 +137,7 @@ describe("renderParts", () => {
       { type: "text", text: "ignored", ignored: true },
       { type: "text", text: "token is <private>sk-1</private>" },
       { type: "reasoning", text: "thinking" } as MessagePart,
-      { type: "tool", tool: "bash", state: { status: "completed", title: "ls" } },
+      { type: "tool", name: "bash", state: { status: "completed", title: "ls" } },
     ];
     const rendered = renderParts(parts, DEFAULTS);
     expect(rendered).toBe("token is [REDACTED]\n\n[tool: bash] ls");
@@ -137,35 +146,50 @@ describe("renderParts", () => {
   test("drops a fully private message body", () => {
     expect(renderParts([{ type: "text", text: "<private>all of it</private>" }], DEFAULTS)).toBe("");
   });
+
+  test("strips the plugin's own recall block from V2 user text", () => {
+    const parts: MessagePart[] = [
+      {
+        type: "text",
+        text:
+          "<memory-context>\nEntries from your personal knowledge base...\n</memory-context>\n\nwhat's the status of the router?",
+      },
+    ];
+    const rendered = renderParts(parts, DEFAULTS);
+    expect(rendered).toBe("what's the status of the router?");
+  });
+
+  test("strips the save-intent nudge from V2 user text", () => {
+    const parts: MessagePart[] = [
+      {
+        type: "text",
+        text: "remember this fix\n\n<memory-save-intent>\nPersist it with the personal-knowledge tools...\n</memory-save-intent>",
+      },
+    ];
+    const rendered = renderParts(parts, DEFAULTS);
+    expect(rendered).toBe("remember this fix");
+  });
 });
 
 describe("autoRedact in rendering", () => {
+  const curl: MessagePart = {
+    type: "tool",
+    name: "bash",
+    state: {
+      status: "completed",
+      title: "curl",
+      input: { command: "curl -H 'Authorization: Bearer sk-abcdefghijklmnop12345678' https://x" },
+    },
+  };
+
   test("redacts secrets from tool input when enabled", () => {
-    const part: MessagePart = {
-      type: "tool",
-      tool: "bash",
-      state: {
-        status: "completed",
-        title: "curl",
-        input: { command: "curl -H 'Authorization: Bearer sk-abcdefghijklmnop12345678' https://x" },
-      },
-    };
-    const rendered = renderToolPart(part, DEFAULTS);
+    const rendered = renderToolPart(curl, DEFAULTS);
     expect(rendered).not.toContain("sk-abcdefghijklmnop12345678");
     expect(rendered).toContain("[REDACTED]");
   });
 
   test("leaves them alone when disabled", () => {
-    const part: MessagePart = {
-      type: "tool",
-      tool: "bash",
-      state: {
-        status: "completed",
-        title: "curl",
-        input: { command: "curl -H 'Authorization: Bearer sk-abcdefghijklmnop12345678' https://x" },
-      },
-    };
-    const rendered = renderToolPart(part, { ...DEFAULTS, autoRedact: false });
+    const rendered = renderToolPart(curl, { ...DEFAULTS, autoRedact: false });
     expect(rendered).toContain("sk-abcdefghijklmnop12345678");
     expect(rendered).not.toContain("[REDACTED]");
   });

@@ -9,8 +9,8 @@ It does two things:
   [personal-knowledge](https://github.com/NocturnLabs/opencode-personal-knowledge)
   MCP store: the text of each turn plus each tool call and its arguments.
 - **Recall.** On the first message of a session, knowledge-base entries that look
-  relevant are prepended to the prompt as a synthetic part, so the agent starts
-  with what is already known about the project instead of asking.
+  relevant are prepended to the prompt, so the agent starts with what is already
+  known about the project instead of asking.
 
 Everything stays on the machine. There is no API key and no third-party service;
 embeddings are computed locally by the MCP server.
@@ -23,31 +23,29 @@ the tools available to the agent for reading and writing entries directly.
 
 ## Install
 
+Requires opencode 2.0.x (the V2 plugin API).
+
 ```sh
-opencode plugin opencode-auto-memory -g
+opencode plugin add opencode-auto-memory@2.0.0
 ```
 
-That resolves the package from npm, caches it under
-`~/.cache/opencode/packages/`, and adds it to `~/.config/opencode/opencode.json`.
-Or write the entry yourself:
+That resolves the package from npm and adds it to the global configuration. Or
+write the entry yourself:
 
 ```jsonc
 // ~/.config/opencode/opencode.jsonc
 {
-  "plugin": ["opencode-auto-memory@1.0.0"]
+  "plugins": ["opencode-auto-memory@2.0.0"]
 }
 ```
-
-Pinning is worth it. The cache directory is keyed by the exact spec and the
-install is skipped when it already exists, so a bare `opencode-auto-memory`
-keeps running whatever version it first resolved; bumping a pinned version
-creates a new cache directory and actually upgrades.
 
 With options:
 
 ```jsonc
 {
-  "plugin": [["opencode-auto-memory", { "injectSemantic": false, "maxInjectEntries": 3 }]]
+  "plugins": [
+    { "package": "opencode-auto-memory@2.0.0", "options": { "injectSemantic": false, "maxInjectEntries": 3 } }
+  ]
 }
 ```
 
@@ -59,11 +57,14 @@ come from the registry or from a local build.
 
 ### From a local checkout
 
-For development, point the config at the built bundle:
+For development, point the config at the package *directory*. For a directory
+path, V2 looks for a root `server` entry point rather than following
+`package.json` `main`; this checkout's `server.js` re-exports the built bundle.
+A `file://` URL to the `.js` bundle is rejected:
 
 ```jsonc
 {
-  "plugin": ["file:///home/you/Development/opencode-auto-memory/dist/index.js"]
+  "plugins": [{ "package": "/home/you/Development/opencode-auto-memory" }]
 }
 ```
 
@@ -74,7 +75,8 @@ bun install
 bun run build
 ```
 
-Do not keep both entries; the same plugin would load twice.
+Do not keep the same plugin in both the legacy `plugin` key and the `plugins`
+key; the same plugin would load twice.
 
 ## Options
 

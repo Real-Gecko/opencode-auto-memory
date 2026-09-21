@@ -63,7 +63,7 @@ export class MCPClient {
       this.request("initialize", {
         protocolVersion: "2024-11-05",
         capabilities: {},
-        clientInfo: { name: "opencode-auto-memory", version: "1.0.0" },
+        clientInfo: { name: "opencode-auto-memory", version: "2.0.0" },
       }),
     );
     dbg("MCP: initialized");
