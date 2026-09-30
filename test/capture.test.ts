@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -14,7 +15,7 @@ interface RpcRequest {
 
 describe("V2 capture", () => {
   test("logs completed user and assistant messages through MCP", () => {
-    const dir = mkdtempSync("/tmp/opencode/auto-memory-capture-");
+    const dir = mkdtempSync(join(tmpdir(), "auto-memory-capture-"));
     const fakeServer = join(dir, "fake-mcp.mjs");
     const requestLog = join(dir, "requests.jsonl");
     const statePath = join(dir, "state.json");

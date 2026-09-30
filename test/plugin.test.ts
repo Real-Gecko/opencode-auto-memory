@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { Plugin } from "@opencode/plugin";
@@ -7,7 +8,7 @@ import type { Plugin } from "@opencode/plugin";
 import AutoMemoryPlugin from "../src/index.ts";
 import { SAVE_NUDGE } from "../src/kb.ts";
 
-const testDir = mkdtempSync("/tmp/opencode/auto-memory-plugin-");
+const testDir = mkdtempSync(join(tmpdir(), "auto-memory-plugin-"));
 process.env.AUTO_MEMORY_DEBUG_PATH = join(testDir, "debug.log");
 
 async function waitFor(check: () => boolean): Promise<void> {
