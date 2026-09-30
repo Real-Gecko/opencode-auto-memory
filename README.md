@@ -5,7 +5,7 @@ locally.
 
 It does two things:
 
-- **Capture.** When a session goes idle, every new message is written to the
+- **Capture.** As user messages are delivered and assistant steps finish, every new message is written to the
   [personal-knowledge](https://github.com/NocturnLabs/opencode-personal-knowledge)
   MCP store: the text of each turn plus each tool call and its arguments.
 - **Recall.** On the first message of a session, knowledge-base entries that look
@@ -26,7 +26,7 @@ the tools available to the agent for reading and writing entries directly.
 Requires opencode 2.0.x (the V2 plugin API).
 
 ```sh
-opencode plugin add opencode-auto-memory@2.0.0
+opencode plugin add opencode-auto-memory@2.0.2
 ```
 
 That resolves the package from npm and adds it to the global configuration. Or
@@ -35,7 +35,7 @@ write the entry yourself:
 ```jsonc
 // ~/.config/opencode/opencode.jsonc
 {
-  "plugins": ["opencode-auto-memory@2.0.0"]
+  "plugins": ["opencode-auto-memory@2.0.2"]
 }
 ```
 
@@ -44,7 +44,7 @@ With options:
 ```jsonc
 {
   "plugins": [
-    { "package": "opencode-auto-memory@2.0.0", "options": { "injectSemantic": false, "maxInjectEntries": 3 } }
+    { "package": "opencode-auto-memory@2.0.2", "options": { "injectSemantic": false, "maxInjectEntries": 3 } }
   ]
 }
 ```
@@ -137,11 +137,17 @@ example) is left alone — so it is a safety net, not a guarantee.
   model in `./local_cache` relative to its cwd, so an unpinned server leaves a
   copy in every directory opencode was started from.
 - **Streaming messages wait.** An assistant message without a completion
-  timestamp is skipped and picked up by the next idle.
+  timestamp is skipped and picked up after the step completes. Capture listens
+  for V2's `session.inbox.delivered`, `session.step.ended`/`failed`, and execution
+  completion events; older V2 idle/status/content-update events remain supported.
+- **Indexing does not block events.** Capture runs in a serial background queue.
+  Repeated notifications coalesce; notifications during a capture schedule a
+  fresh pass so messages arriving after its snapshot are not missed. Public
+  events from other locations are ignored. Individual text deltas do not trigger
+  capture.
 - **Subagent sessions are skipped**, for capture and injection alike.
 - **Shutdown flushes.** A one-shot `opencode run` exits before idle indexing
-  finishes, so `server.instance.disposed` and `dispose` drain the sessions the
-  process touched.
+  finishes, so plugin cleanup drains the queue and the sessions it touched.
 - **Semantic recall is best-effort.** Curated entries and logged transcripts share
   one vector index in the MCP server, so semantic hits are filtered by tag and
   the reliable lookup is the keyword one.

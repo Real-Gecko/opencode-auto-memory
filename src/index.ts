@@ -1,14 +1,14 @@
-import { basename } from "node:path";
+import { basename, resolve } from "node:path";
 
 import type { Plugin } from "@opencode/plugin";
 
 import {
-  flushSessions,
   handleDeleted,
   handleIdle,
   oncePerSession,
   type CaptureClient,
 } from "./capture.ts";
+import { CaptureQueue } from "./capture-queue.ts";
 import { projectRootFrom, resolveOptions } from "./config.ts";
 import { buildKeywordPattern, hasSaveIntent, SAVE_NUDGE } from "./kb.ts";
 import { buildInjection } from "./inject.ts";
@@ -39,6 +39,9 @@ export default {
     const injected = new Set<string>();
     /** Debounced fallback timers for builds that do not emit session.idle. */
     const captureTimers = new Map<string, ReturnType<typeof setTimeout>>();
+    const queue = new CaptureQueue((error) => {
+      dbg(`capture queue ERROR: ${(error as Error)?.message ?? error}`);
+    });
     let flushed = false;
 
     dbg(
@@ -49,12 +52,15 @@ export default {
     const flush = async () => {
       if (flushed) return;
       flushed = true;
-      if (touched.size === 0) return;
       dbg(`flush: draining ${touched.size} session(s)`);
-      await flushSessions(captureClient, [...touched], options);
+      for (const sessionID of touched) {
+        queue.enqueue(sessionID, () =>
+          oncePerSession(sessionID, () => handleIdle(captureClient, sessionID, options)));
+      }
+      await queue.drain();
     };
 
-    const onIdle = async (sessionID: string, source: string) => {
+    const onIdle = (sessionID: string, source: string) => {
       const timer = captureTimers.get(sessionID);
       if (timer !== undefined) {
         clearTimeout(timer);
@@ -62,10 +68,8 @@ export default {
       }
       touched.add(sessionID);
       dbg(`event received: ${source}`);
-      // Persisted message IDs make sequential idle notifications idempotent,
-      // while oncePerSession coalesces notifications that overlap. Do not keep a
-      // transition marker: legacy streams provide no reliable busy boundary.
-      await oncePerSession(sessionID, () => handleIdle(captureClient, sessionID, options));
+      queue.enqueue(sessionID, () =>
+        oncePerSession(sessionID, () => handleIdle(captureClient, sessionID, options)));
     };
 
     const scheduleCapture = (sessionID: string) => {
@@ -75,7 +79,7 @@ export default {
         sessionID,
         setTimeout(() => {
           captureTimers.delete(sessionID);
-          void onIdle(sessionID, "debounced session.message.content.updated");
+          onIdle(sessionID, "debounced session.message.content.updated");
         }, CAPTURE_DEBOUNCE_MS),
       );
     };
@@ -125,6 +129,11 @@ export default {
     void (async () => {
       try {
         for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+          if (controller.signal.aborted) break;
+          // The public stream spans every server location, not just this
+          // plugin instance. Do not have every project index the same turn.
+          const directory = (event as { location?: { directory?: string } }).location?.directory;
+          if (directory && resolve(directory) !== resolve(ctx.location.directory)) continue;
           const type = typeof (event as { type?: unknown }).type === "string"
             ? (event as { type: string }).type
             : "";
@@ -133,14 +142,26 @@ export default {
             unknown
           >;
 
+          // Current V2 emits durable inbox/step/execution events. Content
+          // replacement is replay-only now; retain it for older V2 builds.
+          if (
+            type === "session.inbox.delivered" ||
+            type === "session.step.ended" ||
+            type === "session.step.failed" ||
+            type === "session.execution.succeeded" ||
+            type === "session.execution.failed" ||
+            type === "session.execution.interrupted"
+          ) {
+            const sessionID = data.sessionID;
+            if (typeof sessionID === "string" && sessionID) onIdle(sessionID, type);
+            continue;
+          }
+
           if (type === "session.message.content.updated") {
             const sessionID = data.sessionID as string | undefined;
             if (sessionID) {
               touched.add(sessionID);
-              // V2 currently emits this live even when session.idle/status is
-              // only present in the schema. Debouncing avoids hammering MCP
-              // while an assistant response is streaming, and handleIdle's
-              // isReady check skips incomplete assistant messages.
+              // Compatibility fallback; never capture individual text deltas.
               scheduleCapture(sessionID);
             }
             continue;
@@ -149,7 +170,7 @@ export default {
           if (type === "session.idle") {
             const sessionID = data.sessionID as string | undefined;
             if (!sessionID) continue;
-            await onIdle(sessionID, "session.idle");
+            onIdle(sessionID, "session.idle");
             continue;
           }
 
@@ -158,7 +179,7 @@ export default {
             const status = data.status as { type?: string } | undefined;
             if (!sessionID) continue;
             if (status?.type === "idle") {
-              await onIdle(sessionID, "session.status (idle)");
+              onIdle(sessionID, "session.status (idle)");
             }
             continue;
           }
@@ -171,7 +192,8 @@ export default {
             if (timer !== undefined) clearTimeout(timer);
             captureTimers.delete(sessionID);
             touched.delete(sessionID);
-            await handleDeleted(sessionID, options);
+            // End the KB session only after its running capture has finished.
+            queue.enqueue(sessionID, () => handleDeleted(sessionID, options));
           }
         }
       } catch (error) {

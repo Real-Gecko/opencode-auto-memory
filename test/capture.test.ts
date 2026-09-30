@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -15,7 +14,7 @@ interface RpcRequest {
 
 describe("V2 capture", () => {
   test("logs completed user and assistant messages through MCP", () => {
-    const dir = mkdtempSync(join(tmpdir(), "auto-memory-capture-"));
+    const dir = mkdtempSync("/tmp/opencode/auto-memory-capture-");
     const fakeServer = join(dir, "fake-mcp.mjs");
     const requestLog = join(dir, "requests.jsonl");
     const statePath = join(dir, "state.json");
@@ -61,17 +60,32 @@ process.stdin.on("data", (chunk) => {
     );
     chmodSync(fakeServer, 0o755);
 
-    const captureUrl = pathToFileURL(join(import.meta.dir, "../src/capture.ts")).href;
+    const pluginUrl = pathToFileURL(join(import.meta.dir, "../src/index.ts")).href;
     const configUrl = pathToFileURL(join(import.meta.dir, "../src/config.ts")).href;
     const mcpUrl = pathToFileURL(join(import.meta.dir, "../src/mcp.ts")).href;
     writeFileSync(
       runner,
-      `import { handleIdle } from ${JSON.stringify(captureUrl)};
+      `import plugin from ${JSON.stringify(pluginUrl)};
 import { DEFAULTS } from ${JSON.stringify(configUrl)};
 import { closeMcp } from ${JSON.stringify(mcpUrl)};
+import { readFileSync } from "node:fs";
+
+let completed = false;
+async function waitForLogged(id: string) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    try {
+      const state = JSON.parse(readFileSync(process.env.AUTO_MEMORY_STATE_PATH!, "utf8"));
+      if (state.sessions["session-1"]?.logged?.includes(id)) return;
+    } catch {}
+    await Bun.sleep(10);
+  }
+  throw new Error("message not captured live: " + id);
+}
 
 const client = {
   session: {
+    hook: async () => {},
     get: async ({ sessionID }: { sessionID: string }) => ({
       id: sessionID,
       title: "V2 migration",
@@ -86,7 +100,7 @@ const client = {
       {
         id: "assistant-1",
         type: "assistant",
-        time: { created: 2, completed: 3 },
+        time: { created: 2, ...(completed ? { completed: 3 } : {}) },
         content: [
           { type: "text", text: "Implemented it." },
           {
@@ -117,11 +131,28 @@ const client = {
   },
 };
 
-await handleIdle(client, "session-1", {
-  ...DEFAULTS,
-  serverCommand: ${JSON.stringify(fakeServer)},
-  requestTimeoutMs: 5_000,
+const cleanup = await plugin.setup({
+  ...client,
+  options: {
+    ...DEFAULTS,
+    injectContext: false,
+    serverCommand: ${JSON.stringify(fakeServer)},
+    requestTimeoutMs: 5_000,
+  },
+  location: { directory: "/w", project: { directory: "/w" } },
+  event: {
+    subscribe: async function* () {
+      yield { type: "session.inbox.delivered", data: { sessionID: "session-1", inboxID: "user-1" } };
+      await waitForLogged("user-1");
+      completed = true;
+      yield { type: "session.step.ended", data: { sessionID: "session-1", assistantMessageID: "assistant-1" } };
+      await waitForLogged("assistant-1");
+      yield { type: "session.execution.succeeded", data: { sessionID: "session-1" } };
+    },
+  },
 });
+await waitForLogged("assistant-1");
+await cleanup();
 closeMcp();
 `,
     );
