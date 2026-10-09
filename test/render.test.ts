@@ -21,20 +21,20 @@ describe("privacy", () => {
 
 describe("autoRedactSecrets", () => {
   test("redacts values next to secret-like keys and keeps the key", () => {
-    expect(autoRedactSecrets("token = sk-abcdef123456")).toBe("token = [REDACTED]");
-    expect(autoRedactSecrets('"apiKey": "AbCdEf12345678"')).toBe('"apiKey": "[REDACTED]"');
+    expect(autoRedactSecrets("token = sk-abcdef123456")).toBe("token = [redacted]");
+    expect(autoRedactSecrets('"apiKey": "AbCdEf12345678"')).toBe('"apiKey": "[redacted]"');
   });
 
   test("is case and spacing tolerant", () => {
-    expect(autoRedactSecrets("PASSWORD: hunter2hunter")).toBe("PASSWORD: [REDACTED]");
-    expect(autoRedactSecrets("access-key AKIAEXAMPLEKEY12345")).toBe("access-key [REDACTED]");
+    expect(autoRedactSecrets("PASSWORD: hunter2hunter")).toBe("PASSWORD: [redacted]");
+    expect(autoRedactSecrets("access-key AKIAEXAMPLEKEY12345")).toBe("access-key [redacted]");
     expect(autoRedactSecrets('clientSecret = "xyz123456789ab"')).toBe(
-      'clientSecret = "[REDACTED]"',
+      'clientSecret = "[redacted]"',
     );
   });
 
-  test("leaves short or unqualified values alone", () => {
-    expect(autoRedactSecrets("secret = hunt")).toBe("secret = hunt");
+  test("redacts short assigned secrets but leaves unqualified values alone", () => {
+    expect(autoRedactSecrets("secret = hunt")).toBe("secret = [redacted]");
     expect(autoRedactSecrets("the answer is 42")).toBe("the answer is 42");
     expect(autoRedactSecrets("mapping: {a: 1}")).toBe("mapping: {a: 1}");
     expect(autoRedactSecrets("commit abcdef0123456789")).toBe("commit abcdef0123456789");
@@ -42,23 +42,23 @@ describe("autoRedactSecrets", () => {
 
   test("redacts bearer tokens, JWTs and private key blocks", () => {
     const header = "Authorization: Bearer ghp_abcdefghijklmnopqrstuvwxyzABCDE";
-    expect(autoRedactSecrets(header)).toBe("Authorization: Bearer [REDACTED]");
+    expect(autoRedactSecrets(header)).toBe("Authorization: Bearer [redacted]");
     expect(autoRedactSecrets("jwt=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.SflKxwRJSMew")).toBe(
-      "jwt=[REDACTED]",
+      "jwt=[redacted]",
     );
     const key = "-----BEGIN RSA PRIVATE KEY-----\nMIIBOgKB\n-----END RSA PRIVATE KEY-----";
-    expect(autoRedactSecrets(key)).toBe("[REDACTED]");
+    expect(autoRedactSecrets(key)).toBe("[redacted]");
   });
 
   test("redacts URL userinfo and keeps scheme and host", () => {
     expect(autoRedactSecrets("rtsp://user:pass@192.168.210.10:554/live")).toBe(
-      "rtsp://[REDACTED]@192.168.210.10:554/live",
+      "rtsp://[redacted]@192.168.210.10:554/live",
     );
     expect(autoRedactSecrets("postgresql://admin:hunter2@db:5432/catalog")).toBe(
-      "postgresql://[REDACTED]@db:5432/catalog",
+      "postgresql://[redacted]@db:5432/catalog",
     );
     expect(autoRedactSecrets("https://token:abcdef12345678@example.com/x")).toBe(
-      "https://[REDACTED]@example.com/x",
+      "https://[redacted]@example.com/x",
     );
   });
 
@@ -73,9 +73,39 @@ describe("autoRedactSecrets", () => {
 
   test("redacts several in one text and plays nice with markers", () => {
     expect(autoRedactSecrets("a=1 token=xhlH9ajLpM token=yqK3mWd8xR")).toBe(
-      "a=1 token=[REDACTED] token=[REDACTED]",
+      "a=1 token=[redacted] token=[redacted]",
     );
     expect(autoRedactSecrets("token = [REDACTED]")).toBe("token = [REDACTED]");
+  });
+
+  test("redacts prefixed credential assignments and CLI flags", () => {
+    for (const name of ["PASS", "DB_PASS", "PGPASSWORD", "PROXY_API_KEY", "PBW_ENCRYPTION_KEY"]) {
+      expect(autoRedactSecrets(`${name} = abc`)).toBe(`${name} = [redacted]`);
+    }
+    expect(autoRedactSecrets('SECRET="two words"')).toBe('SECRET="[redacted]"');
+    expect(autoRedactSecrets("--token abc --password=xy")).toBe("--token [redacted] --password=[redacted]");
+  });
+
+  test("limits prose redaction to quoted or credential-shaped values", () => {
+    expect(autoRedactSecrets('SECRET is "value" and stays private')).toBe('SECRET is "[redacted]" and stays private');
+    expect(autoRedactSecrets("password is abc123 for SSH")).toBe("password is [redacted] for SSH");
+    for (const text of ["SECRET is required", "token is missing", "situation", 'key = "Enter"', "encryption = true"]) {
+      expect(autoRedactSecrets(text)).toBe(text);
+    }
+  });
+
+  test("preserves markers and is idempotent", () => {
+    for (const text of ["TOKEN=[redacted]", 'SECRET = "[REDACTED]"', "SECRET is [redacted]"]) {
+      expect(autoRedactSecrets(text)).toBe(text);
+    }
+    const once = autoRedactSecrets('DB_PASS=abc TOKEN="two words"');
+    expect(autoRedactSecrets(once)).toBe(once);
+  });
+
+  test("redacts incomplete private-key material without swallowing surrounding text", () => {
+    const fragment = "-----BEGIN RSA PRIVATE KEY-----\n" + "A".repeat(64);
+    expect(autoRedactSecrets(fragment + "\nnext sentence")).toBe("[redacted]\nnext sentence");
+    expect(autoRedactSecrets("-----BEGIN RSA PRIVATE KEY-----\n[redacted]")).toBe("-----BEGIN RSA PRIVATE KEY-----\n[redacted]");
   });
 });
 
@@ -185,7 +215,7 @@ describe("autoRedact in rendering", () => {
   test("redacts secrets from tool input when enabled", () => {
     const rendered = renderToolPart(curl, DEFAULTS);
     expect(rendered).not.toContain("sk-abcdefghijklmnop12345678");
-    expect(rendered).toContain("[REDACTED]");
+    expect(rendered).toContain("[redacted]");
   });
 
   test("leaves them alone when disabled", () => {

@@ -26,7 +26,7 @@ the tools available to the agent for reading and writing entries directly.
 Requires opencode 2.0.x (the V2 plugin API).
 
 ```sh
-opencode plugin add opencode-auto-memory@2.0.2
+opencode plugin add opencode-auto-memory@2.0.3
 ```
 
 That resolves the package from npm and adds it to the global configuration. Or
@@ -35,7 +35,7 @@ write the entry yourself:
 ```jsonc
 // ~/.config/opencode/opencode.jsonc
 {
-  "plugins": ["opencode-auto-memory@2.0.2"]
+  "plugins": ["opencode-auto-memory@2.0.3"]
 }
 ```
 
@@ -44,7 +44,7 @@ With options:
 ```jsonc
 {
   "plugins": [
-    { "package": "opencode-auto-memory@2.0.2", "options": { "injectSemantic": false, "maxInjectEntries": 3 } }
+    { "package": "opencode-auto-memory@2.0.3", "options": { "injectSemantic": false, "maxInjectEntries": 3 } }
   ]
 }
 ```

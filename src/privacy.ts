@@ -22,14 +22,23 @@ export function isFullyPrivate(content: string): boolean {
  * survives so memory keeps the *fact* that a credential was set.
  */
 export function autoRedactSecrets(content: string): string {
-  let out = content.replace(URL_USERINFO, "$1[REDACTED]@");
-  out = out.replace(SECRET_PAIR, (_m, key, q1, pre, sep, ws, q2, _value) =>
-    `${key}${q1}${pre}${sep}${ws}${q2}[REDACTED]`,
+  const replaceValue = (match: string, prefix: string, value: string) => {
+    if (/^(["'`]?)\[redacted\]\1$/i.test(value)) return match;
+    const quote = /^["'`]/.test(value) ? value[0] : "";
+    return `${prefix}${quote}[redacted]${quote}`;
+  };
+  let out = content.replace(URL_USERINFO, "$1[redacted]@");
+  out = out.replace(SECRET_PAIR, replaceValue);
+  out = out.replace(SECRET_PROSE, (match, prefix, value) =>
+    /^["'`]/.test(value) || /[\d_+\/=!-]/.test(value)
+      ? replaceValue(match, prefix, value) : match,
   );
-  out = out.replace(PREFIXED_SECRET, "[REDACTED]");
-  out = out.replace(BEARER_TOKEN, "bearer [REDACTED]");
-  out = out.replace(JWT_TOKEN, "[REDACTED]");
-  out = out.replace(PRIVATE_KEY_BLOCK, "[REDACTED]");
+  out = out.replace(SECRET_FLAG, replaceValue);
+  out = out.replace(PREFIXED_SECRET, "[redacted]");
+  out = out.replace(BEARER_TOKEN, "bearer [redacted]");
+  out = out.replace(JWT_TOKEN, "[redacted]");
+  out = out.replace(PRIVATE_KEY_BLOCK, "[redacted]");
+  out = out.replace(PRIVATE_KEY_FRAGMENT, "[redacted]");
   return out;
 }
 
@@ -38,8 +47,11 @@ export function autoRedactSecrets(content: string): string {
  * A `"` before the separator covers JSON object keys (`"apiKey": ...`); the
  * closing quote is left in place so the shape survives intact.
  */
-const SECRET_PAIR =
-  /\b((?:token|secret|password|passwd|pwd|api[_ -]*key|access[_ -]*key|private[_ -]*key|client[_ -]*secret)s?)\b(["'`]?)(\s*)([:=])(\s*)(["'`]?)([^\s"'`\\,;}|>\[\]]{8,})/gi;
+const SECRET_NAME = String.raw`(?:[a-z][a-z0-9]*_)*(?:pass|password|pgpassword|passwd|pwd|token|secret|api[_ -]*key|access[_ -]*key|private[_ -]*key|encryption[_ -]*key|client[_ -]*secret)s?`;
+const SECRET_VALUE = String.raw`(?:"[^"\r\n]*"|'[^'\r\n]*'|\x60[^\x60\r\n]*\x60|\[redacted\]|[^\s"'\x60\\,;}|>\[\]]+)`;
+const SECRET_PAIR = new RegExp(String.raw`(\b${SECRET_NAME}\b["'\x60]?[ \t]*[:=][ \t]*)(${SECRET_VALUE})`, "gi");
+const SECRET_PROSE = new RegExp(String.raw`(\b${SECRET_NAME}\b[ \t]+is[ \t]+)(${SECRET_VALUE})`, "gi");
+const SECRET_FLAG = new RegExp(String.raw`(--(?:password|passwd|pwd|token|secret|api-key|encryption-key)(?:=|[ \t]+))(${SECRET_VALUE})`, "gi");
 
 /**
  * Unmistakable secret prefixes, redacted even without a key name (`key` alone is
@@ -57,6 +69,8 @@ const JWT_TOKEN = /\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\
 /** PEM / OpenSSH / encrypted private key blocks, which can span lines. */
 const PRIVATE_KEY_BLOCK =
   /-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----/gi;
+const PRIVATE_KEY_FRAGMENT =
+  /-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----(?:\r?\n|\\n|[ \t])*[A-Za-z0-9+/=]{40,}(?:(?:\r?\n|\\n|[ \t])+[A-Za-z0-9+/=]{40,})*/gi;
 
 /**
  * Credentials embedded in a URL: `scheme://user:pass@host...`. Only the userinfo
