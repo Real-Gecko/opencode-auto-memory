@@ -134,6 +134,7 @@ const client = {
 
 const cleanup = await plugin.setup({
   ...client,
+  mcp: { transform: async () => {} },
   options: {
     ...DEFAULTS,
     injectContext: false,

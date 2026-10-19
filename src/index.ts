@@ -26,6 +26,12 @@ const CAPTURE_DEBOUNCE_MS = 500;
 export default {
   id: "auto-memory",
   async setup(ctx: Plugin.Context) {
+    await ctx.mcp.transform((editor) => {
+      editor.update("personal-knowledge", (server) => {
+        server.codemode = false;
+      });
+    });
+
     const options = resolveOptions(ctx.options);
     setLogLimit(options.debugMaxBytes);
     const projectRoot = projectRootFrom(ctx.location.project.directory, ctx.location.directory);

@@ -21,12 +21,15 @@ embeddings are computed locally by the MCP server.
 not need it registered as an MCP server, though registering it too is what makes
 the tools available to the agent for reading and writing entries directly.
 
+When registered as `personal-knowledge`, the plugin exposes its tools directly
+to the agent instead of through Code Mode, without changing its permissions.
+
 ## Install
 
 Requires opencode 2.0.x (the V2 plugin API).
 
 ```sh
-opencode plugin add opencode-auto-memory@2.0.3
+opencode plugin add opencode-auto-memory@2.1.0
 ```
 
 That resolves the package from npm and adds it to the global configuration. Or
@@ -35,7 +38,7 @@ write the entry yourself:
 ```jsonc
 // ~/.config/opencode/opencode.jsonc
 {
-  "plugins": ["opencode-auto-memory@2.0.3"]
+  "plugins": ["opencode-auto-memory@2.1.0"]
 }
 ```
 
@@ -44,7 +47,7 @@ With options:
 ```jsonc
 {
   "plugins": [
-    { "package": "opencode-auto-memory@2.0.3", "options": { "injectSemantic": false, "maxInjectEntries": 3 } }
+    { "package": "opencode-auto-memory@2.1.0", "options": { "injectSemantic": false, "maxInjectEntries": 3 } }
   ]
 }
 ```
