@@ -1,35 +1,30 @@
 # opencode-auto-memory
 
 An opencode plugin that gives the agent a memory of its own past work, stored
-locally.
+locally in one SQLite file. It needs no MCP server or other service.
 
-It does two things:
+- **Notes.** The agent stores and searches notes with the plugin's own tools:
+  `memory_search`, `memory_get`, `memory_store`, `memory_update`, `memory_delete`.
+- **Conversation index.** As user messages are delivered and assistant steps
+  finish, each new message is added to a full-text index: its text, reasoning
+  and tool calls with their arguments, never tool output. The index holds no
+  message text (contentless FTS5); `session_search` returns session and message
+  ids with a preview read back from opencode's own database, and `session_read`
+  reads a conversation.
+- **Recall.** On the first message of a session, notes about the project and notes
+  sharing words with the prompt are prepended to it, so the agent starts with
+  what is already known instead of asking.
 
-- **Capture.** As user messages are delivered and assistant steps finish, every new message is written to the
-  [personal-knowledge](https://github.com/NocturnLabs/opencode-personal-knowledge)
-  MCP store: the text of each turn plus each tool call and its arguments.
-- **Recall.** On the first message of a session, knowledge-base entries that look
-  relevant are prepended to the prompt, so the agent starts with what is already
-  known about the project instead of asking.
-
-Everything stays on the machine. There is no API key and no third-party service;
-embeddings are computed locally by the MCP server.
-
-## Requirements
-
-`opencode-personal-knowledge` on `PATH`. The plugin spawns it over stdio and does
-not need it registered as an MCP server, though registering it too is what makes
-the tools available to the agent for reading and writing entries directly.
-
-When registered as `personal-knowledge`, the plugin exposes its tools directly
-to the agent instead of through Code Mode, without changing its permissions.
+Search is keyword search (SQLite FTS5 with porter stemming): `a b` needs both
+words, `a OR b`, `"exact phrase"`, `prefix*`. Input that is not valid FTS5
+syntax is searched as plain words instead.
 
 ## Install
 
 Requires opencode 2.0.x (the V2 plugin API).
 
 ```sh
-opencode plugin add opencode-auto-memory@2.1.0
+opencode plugin add opencode-auto-memory@3.0.0
 ```
 
 That resolves the package from npm and adds it to the global configuration. Or
@@ -38,7 +33,7 @@ write the entry yourself:
 ```jsonc
 // ~/.config/opencode/opencode.jsonc
 {
-  "plugins": ["opencode-auto-memory@2.1.0"]
+  "plugins": ["opencode-auto-memory@3.0.0"]
 }
 ```
 
@@ -47,7 +42,7 @@ With options:
 ```jsonc
 {
   "plugins": [
-    { "package": "opencode-auto-memory@2.1.0", "options": { "injectSemantic": false, "maxInjectEntries": 3 } }
+    { "package": "opencode-auto-memory@3.0.0", "options": { "maxInjectEntries": 3 } }
   ]
 }
 ```
@@ -81,44 +76,67 @@ bun run build
 Do not keep the same plugin in both the legacy `plugin` key and the `plugins`
 key; the same plugin would load twice.
 
+## Migrating from 2.x (personal-knowledge)
+
+Version 2.x logged to the personal-knowledge MCP server. This version needs no
+server and keeps everything in its own database.
+
+1. Update the plugin and drop its old options (`backend`, `serverCommand`,
+   `serverUrl`, `apiKeyFile`, `captureToolOutput`, ...): unknown options are ignored.
+2. Copy the notes, from a checkout of this repository (the npm package ships
+   only the bundle):
+
+   ```sh
+   bun install
+   bun scripts/import-personal-knowledge.ts            # default ~/.local/share/opencode-personal-knowledge/knowledge.db
+   bun scripts/import-personal-knowledge.ts /path/to/knowledge.db
+   ```
+
+   Note ids are kept, so references such as "entry #43" still resolve. A note
+   whose id is already taken is skipped, so running it twice is harmless.
+   `AUTO_MEMORY_DB_PATH` selects another target database.
+3. Transcripts need no migration: on start the plugin indexes the conversations
+   opencode already stores. Messages that exist only in personal-knowledge (from
+   sessions since deleted in opencode) are not carried over.
+4. Remove the `personal-knowledge` entry from `mcp.servers` once you no longer
+   need it, and update any AGENTS.md text that names `personal-knowledge_*` tools.
+   `~/.config/opencode/auto-memory.json` (the old logging state) is no longer read
+   and can be deleted. `knowledge.db` itself is not modified.
+
 ## Options
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `serverCommand` | `opencode-personal-knowledge` | Command that starts the MCP server |
-| `requestTimeoutMs` | `120000` | Per-request MCP timeout; a cold embedding model is slow |
-| `messageLimit` | `32000` | Max characters stored per message |
+| `captureTranscripts` | `true` | Index session messages. Off keeps notes, recall and the save reminder only |
+| `memoryGuide` | `true` | Add a short "how to use memory" section to the system prompt. Only sent on requests that have the memory tools |
+| `messageLimit` | `32000` | Max characters indexed per message |
 | `toolInputLimit` | `1000` | Max characters of a tool call's JSON input |
 | `toolErrorLimit` | `200` | Max characters of a failed call's reason |
-| `captureToolOutput` | `false` | Store tool output as well (it was 79% of the store) |
-| `toolOutputLimit` | `2000` | Max characters of output when the above is on |
-| `injectContext` | `true` | Prepend relevant entries to the first message |
-| `injectSemantic` | `true` | Also run a semantic search, budget permitting |
-| `injectTimeoutMs` | `5000` | Total budget for injection lookups |
+| `injectContext` | `true` | Prepend relevant notes to the first message |
 | `maxInjectEntries` | `5` | Max entries per injected section |
 | `injectExcerptChars` | `220` | Max characters of each excerpt |
 | `keywordNudge` | `true` | Remind the agent to save when the user says "remember this" |
 | `keywordPatterns` | `[]` | Extra save-intent regex sources |
-| `autoRedact` | `true` | Redact obviously secret values (tokens, passwords, keys, JWTs, private key blocks, URL userinfo) before storage |
+| `autoRedact` | `true` | Redact obviously secret values (tokens, passwords, keys, JWTs, private key blocks, URL userinfo) before indexing |
 | `debugMaxBytes` | `1048576` | Rotate the debug log past this size |
 
 ## Files
 
 | Path | Purpose |
 | --- | --- |
-| `~/.config/opencode/auto-memory.json` | Which messages have been logged, and to which KB session |
+| `~/.local/share/opencode-auto-memory/memory.db` | Notes and the conversation index (SQLite, WAL) |
+| `~/.local/share/opencode/opencode.db` | opencode's own database, read only, to show search hits |
 | `~/.config/opencode/auto-memory-debug.log` | Debug log, rotated to `.log.1` |
-| `~/.cache/opencode-personal-knowledge/` | The MCP server's working directory |
 
-`AUTO_MEMORY_STATE_PATH`, `AUTO_MEMORY_DEBUG_PATH` and `AUTO_MEMORY_SERVER_CWD`
-override the first three. The tests rely on this.
+`AUTO_MEMORY_DB_PATH`, `AUTO_MEMORY_OPENCODE_DB` and `AUTO_MEMORY_DEBUG_PATH`
+override them. The tests rely on this.
 
 ## Privacy
 
 Anything inside `<private>...</private>` is replaced with `[REDACTED]` before a
-message is stored, and a message that is nothing but a private span is not stored
-at all. Output of the `personal-knowledge` tools is never stored, so a search
-cannot feed its own results back into the store.
+message is indexed, and a message that is nothing but a private span is not
+indexed at all. Tool output is never indexed. The index stores no text, but
+`session_read` shows opencode's stored messages as they are.
 
 On top of that, `autoRedact` (on by default) redacts values that obviously look
 like secrets even when the model forgot to mark them: values following a
@@ -130,15 +148,19 @@ example) is left alone — so it is a safety net, not a guarantee.
 
 ## Behaviour worth knowing
 
-- **State is shared between processes.** Several opencode instances write the
-  same state file, so every save re-reads and merges rather than overwriting, and
-  writes through a temp file. Losing that file makes every session re-log its
-  whole transcript into a fresh KB session.
-- **Progress is saved per message.** A timed-out `log_message` used to discard a
-  whole pass, which produced duplicate KB sessions.
-- **The server's working directory is pinned.** `fastembed` caches a ~128MB ONNX
-  model in `./local_cache` relative to its cwd, so an unpinned server leaves a
-  copy in every directory opencode was started from.
+- **The database is shared between processes.** Several opencode processes can
+  index into the same file; a message already indexed by one is skipped by the
+  others.
+- **The index is a cache.** Deleting `memory.db` loses the notes, but the
+  conversation index alone can be dropped by deleting the `messages` and
+  `messages_fts` tables. On every start the plugin indexes whatever opencode has
+  stored that the index lacks (main sessions only), in the background; the first
+  run over a large history takes some seconds. A deleted session is removed from
+  the index.
+- **Hits are read from opencode's database.** The plugin API only exposes a
+  session's context since its last compaction, so previews and `session_read`
+  read `session_message` and `session_v2` directly. That is opencode's internal
+  schema; `src/opencode-db.ts` is the only place that knows it.
 - **Streaming messages wait.** An assistant message without a completion
   timestamp is skipped and picked up after the step completes. Capture listens
   for V2's `session.inbox.delivered`, `session.step.ended`/`failed`, and execution
@@ -151,9 +173,6 @@ example) is left alone — so it is a safety net, not a guarantee.
 - **Subagent sessions are skipped**, for capture and injection alike.
 - **Shutdown flushes.** A one-shot `opencode run` exits before idle indexing
   finishes, so plugin cleanup drains the queue and the sessions it touched.
-- **Semantic recall is best-effort.** Curated entries and logged transcripts share
-  one vector index in the MCP server, so semantic hits are filtered by tag and
-  the reliable lookup is the keyword one.
 
 ## Development
 

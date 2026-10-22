@@ -1,122 +1,27 @@
 import type { AutoMemoryOptions } from "./config.ts";
+import type { Note } from "./db.ts";
 
-export interface KbEntry {
-  id: number;
-  title: string;
-  excerpt: string;
-  tags: string[];
-  /** 0-100, only present for semantic hits. */
-  similarity?: number;
-}
-
-const BLOCK_SEPARATOR = /\n*-{3,}\n*/;
-
-function cleanExcerpt(text: string, limit: number): string {
-  const collapsed = text
-    .replace(/\s*\n\s*/g, " ")
-    .replace(/\.{3,}$/, "")
-    .trim();
+function excerpt(text: string, limit: number): string {
+  const collapsed = text.replace(/\s+/g, " ").trim();
   return collapsed.length > limit ? `${collapsed.slice(0, limit).trimEnd()}...` : collapsed;
 }
 
-function parseTags(block: string): string[] {
-  const match = block.match(/^\*{0,2}Tags:?\*{0,2}\s*(.+)$/m);
-  if (!match?.[1]) return [];
-  return match[1]
-    .split(",")
-    .map((tag) => tag.trim())
-    .filter(Boolean);
-}
-
 /**
- * Parse `search_knowledge_text` output:
- *
- *   Found 2 result(s) for "query":
- *
- *   **Title** (ID: 43)
- *   first 200 chars of content...
- *   Tags: a, b
+ * The keyword search matches title, content and tags alike, so a note that
+ * merely mentions the project can outrank the project's own rolling note.
+ * Reorder by how strongly each hit is *about* the project before the list gets
+ * truncated.
  */
-export function parseTextSearch(output: string, excerptChars: number): KbEntry[] {
-  if (!output || output.startsWith("No results found")) return [];
-  const body = output.replace(/^Found \d+ result\(s\)[^\n]*\n+/, "");
-  const entries: KbEntry[] = [];
-
-  for (const block of body.split(BLOCK_SEPARATOR)) {
-    const header = block.match(/\*\*(.+?)\*\*\s*\(ID:\s*(\d+)\)/);
-    if (!header?.[1] || !header[2]) continue;
-    const rest = block
-      .slice((header.index ?? 0) + header[0].length)
-      .replace(/^\*{0,2}Tags:?\*{0,2}.*$/gm, "")
-      .trim();
-    entries.push({
-      id: Number(header[2]),
-      title: header[1].trim(),
-      excerpt: cleanExcerpt(rest, excerptChars),
-      tags: parseTags(block),
-    });
-  }
-  return entries;
-}
-
-/**
- * Parse `search_knowledge` output:
- *
- *   ## Found 2 similar entries:
- *
- *   ### 1. Title (87% similar)
- *   **ID:** 43
- *   **Tags:** a, b
- *
- *   preview...
- */
-export function parseSemanticSearch(output: string, excerptChars: number): KbEntry[] {
-  if (!output || !output.includes("**ID:**")) return [];
-  const entries: KbEntry[] = [];
-
-  for (const block of output.split(BLOCK_SEPARATOR)) {
-    const header = block.match(/###\s*\d+\.\s*(.+?)\s*\((\d+)%\s*similar\)/);
-    const idMatch = block.match(/\*\*ID:\*\*\s*(\d+)/);
-    if (!header?.[1] || !header[2] || !idMatch?.[1]) continue;
-    const rest = block
-      .slice((idMatch.index ?? 0) + idMatch[0].length)
-      .replace(/^\*{0,2}Tags:?\*{0,2}.*$/gm, "")
-      .trim();
-    entries.push({
-      id: Number(idMatch[1]),
-      title: header[1].trim(),
-      excerpt: cleanExcerpt(rest, excerptChars),
-      tags: parseTags(block),
-      similarity: Number(header[2]),
-    });
-  }
-  return entries;
-}
-
-/**
- * Session transcripts share one vector table with curated entries, so a
- * semantic search returns both. Transcript rows carry a `session:N` tag.
- */
-export function isTranscript(entry: KbEntry): boolean {
-  return entry.tags.some((tag) => tag.startsWith("session:"));
-}
-
-/**
- * The keyword search matches title and content alike and returns them in
- * insertion order, so an entry that merely mentions the project can outrank the
- * project's own rolling entry. Reorder by how strongly each hit is *about* the
- * project before the list gets truncated.
- */
-export function rankProjectEntries(entries: KbEntry[], projectName: string): KbEntry[] {
+export function rankProjectEntries(entries: Note[], projectName: string): Note[] {
   const needle = projectName.toLowerCase();
-  const score = (entry: KbEntry): number => {
+  const score = (entry: Note): number => {
     const titleMatch = Boolean(needle) && entry.title.toLowerCase().includes(needle);
     const tagMatch = Boolean(needle) && entry.tags.some((tag) => tag.toLowerCase() === needle);
     let value = 0;
     if (titleMatch) value += 4;
     if (tagMatch) value += 1;
-    // A rolling entry is the most useful thing to read first, but only when it
-    // is this project's rolling entry.
+    // A rolling note is the most useful thing to read first, but only when it
+    // is this project's rolling note.
     if ((titleMatch || tagMatch) && entry.tags.some((tag) => tag.toLowerCase() === "rolling")) {
       value += 2;
     }
@@ -129,15 +34,20 @@ export function rankProjectEntries(entries: KbEntry[], projectName: string): KbE
 }
 
 const PREAMBLE =
-  "Entries from your personal knowledge base that may bear on this session. " +
-  "Titles and excerpts only: call `personal-knowledge_get_knowledge` with an ID for the full entry, " +
-  "`personal-knowledge_search_knowledge_text` to look for others, and treat anything here as possibly " +
+  "Notes from your memory that may bear on this session. " +
+  "Titles and excerpts only: call `memory_get` with an ID for the full note, " +
+  "`memory_search` to look for others, and treat anything here as possibly " +
   "stale until you check it against the working tree.";
+
+function entryLine(entry: Note, options: AutoMemoryOptions): string {
+  const text = excerpt(entry.content, options.injectExcerptChars);
+  return `- #${entry.id} ${entry.title}${text ? ` — ${text}` : ""}`;
+}
 
 export function formatContextBlock(
   projectName: string,
-  projectEntries: KbEntry[],
-  relatedEntries: KbEntry[],
+  projectEntries: Note[],
+  relatedEntries: Note[],
   options: AutoMemoryOptions,
 ): string {
   const seen = new Set<number>();
@@ -148,7 +58,7 @@ export function formatContextBlock(
     lines.push(`\nMatching "${projectName}":`);
     for (const entry of project) {
       seen.add(entry.id);
-      lines.push(`- #${entry.id} ${entry.title}${entry.excerpt ? ` — ${entry.excerpt}` : ""}`);
+      lines.push(entryLine(entry, options));
     }
   }
 
@@ -157,10 +67,7 @@ export function formatContextBlock(
     .slice(0, options.maxInjectEntries);
   if (related.length > 0) {
     lines.push("\nPossibly relevant:");
-    for (const entry of related) {
-      const score = entry.similarity === undefined ? "" : ` [${entry.similarity}%]`;
-      lines.push(`- #${entry.id}${score} ${entry.title}${entry.excerpt ? ` — ${entry.excerpt}` : ""}`);
-    }
+    for (const entry of related) lines.push(entryLine(entry, options));
   }
 
   if (lines.length === 0) return "";
@@ -195,8 +102,20 @@ export function hasSaveIntent(text: string, pattern: RegExp): boolean {
 
 export const SAVE_NUDGE =
   "<memory-save-intent>\n" +
-  "The user asked for something to be remembered. Persist it with the personal-knowledge tools " +
-  "before you finish this turn: `personal-knowledge_update_knowledge` to overwrite the project's " +
-  "existing rolling entry, or `personal-knowledge_store_knowledge` for a durable fact that has no " +
-  "entry yet. Say which entry you wrote, so it can be corrected. Do not skip this.\n" +
+  "The user asked for something to be remembered. Persist it before you finish this turn: " +
+  "`memory_update` to overwrite the project's existing rolling note, or `memory_store` for a " +
+  "durable fact that has no note yet. Say which note you wrote, so it can be corrected. Do not skip this.\n" +
   "</memory-save-intent>";
+
+/**
+ * Added to the system prompt so a model knows how to use the memory tools,
+ * without the user having to write that into AGENTS.md. Describes tools only;
+ * project conventions stay with the user.
+ */
+export const MEMORY_GUIDE =
+  "## Memory\n" +
+  "Persistent notes and a search index of past conversations come from the auto-memory tools. Call them directly, not through `execute`.\n" +
+  "- Recall: `memory_search` (keywords, FTS5 syntax: `a b` means both, `a OR b`, `\"exact phrase\"`, `prefix*`), `memory_get` with an id for the full note.\n" +
+  "- Store: `memory_store` for a new fact (title, content, tags), `memory_update` with an id to overwrite a note, `memory_delete` to remove one. Never store secrets.\n" +
+  "- Past conversations: every message of the main session (text and reasoning, tool calls without their output) is indexed automatically. " +
+  "Find them with `session_search`, then read one with `session_read`. Do not copy transcripts into notes.";

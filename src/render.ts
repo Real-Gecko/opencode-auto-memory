@@ -16,10 +16,6 @@ export interface MessagePart {
     status?: string;
     title?: string;
     input?: Record<string, unknown>;
-    /** V2 tool output content. */
-    content?: Array<{ type?: string; text?: string }>;
-    /** V1 tool output string (legacy). */
-    output?: string;
     error?: string | { message?: string };
   };
 }
@@ -36,14 +32,6 @@ export function clip(text: unknown, limit: number): string {
   const value = String(text ?? "");
   if (value.length <= limit) return value;
   return `${value.slice(0, limit)}\n[truncated ${value.length - limit} chars]`;
-}
-
-function toolOutput(state: NonNullable<MessagePart["state"]>): string {
-  if (typeof state.output === "string") return state.output;
-  return (state.content ?? [])
-    .filter((item) => item.type === "text" && typeof item.text === "string")
-    .map((item) => item.text as string)
-    .join("\n");
 }
 
 function errorReason(error: string | { message?: string } | undefined): string {
@@ -63,19 +51,10 @@ export function renderToolPart(part: MessagePart, options: AutoMemoryOptions): s
     lines.push(`input: ${clip(JSON.stringify(input), options.toolInputLimit)}`);
   }
 
-  // Recording what the knowledge base returned would store its own search
-  // results back into it, so each lookup compounds as noise. Keep the query.
-  if (name.includes("personal-knowledge")) {
-    return finish(lines.join("\n"));
-  }
-
   if (state.status === "error") {
     // Failures keep a short reason, since "this did not work" is a fact worth
     // recalling.
     lines.push(`error: ${clip(errorReason(state.error), options.toolErrorLimit)}`);
-  } else if (options.captureToolOutput && state.status === "completed") {
-    const output = toolOutput(state);
-    if (output.trim()) lines.push(`output: ${clip(output, options.toolOutputLimit)}`);
   } else if (state.status && state.status !== "completed") {
     lines.push(`status: ${state.status}`);
   }
@@ -84,9 +63,9 @@ export function renderToolPart(part: MessagePart, options: AutoMemoryOptions): s
 }
 
 /**
- * Tool output is dropped by default: it was 79% of everything in the store and
- * is almost never what a later search is looking for -- the call is the useful
- * record, not what it printed.
+ * Tool output is never indexed: it was 79% of everything stored and is almost
+ * never what a later search is looking for -- the call is the useful record,
+ * not what it printed.
  */
 export function renderParts(
   parts: MessagePart[] | undefined,
@@ -94,7 +73,7 @@ export function renderParts(
 ): string {
   const blocks: string[] = [];
   for (const part of parts ?? []) {
-    if (part.type === "text") {
+    if (part.type === "text" || part.type === "reasoning") {
       if (part.synthetic || part.ignored) continue;
       const text = part.text?.trim() ?? "";
       // The plugin's own recall block / nudge live inline in V2 user text;

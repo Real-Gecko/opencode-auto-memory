@@ -1,9 +1,8 @@
 import type { AutoMemoryOptions } from "./config.ts";
+import { forgetSessionIndex, indexedMessageIDs, indexMessage, inTransaction, isIndexed } from "./db.ts";
 import { dbg, dbgAwait } from "./logger.ts";
-import { getMcp } from "./mcp.ts";
-import { renderParts, type MessagePart } from "./render.ts";
-import { clip } from "./render.ts";
-import { commitSession, forgetSession, loadState } from "./state.ts";
+import { mainSessionMessages, readMessage } from "./opencode-db.ts";
+import { clip, renderParts, type MessagePart } from "./render.ts";
 
 interface SessionInfo {
   id: string;
@@ -15,7 +14,6 @@ interface ToolState {
   status?: string;
   title?: string;
   input?: Record<string, unknown>;
-  content?: Array<{ type?: string; text?: string }>;
   error?: string | { message?: string };
 }
 
@@ -65,24 +63,26 @@ function toParts(msg: SessionMessage): MessagePart[] {
   if (msg.type !== "assistant") return [];
   const parts: MessagePart[] = [];
   for (const item of msg.content ?? []) {
-    if (item.type === "text" && item.text) {
-      parts.push({ type: "text", text: item.text });
+    if ((item.type === "text" || item.type === "reasoning") && item.text) {
+      parts.push({ type: item.type, text: item.text });
     } else if (item.type === "tool") {
       const state = item.state ?? {};
       parts.push({
         type: "tool",
         name: item.name,
-        state: {
-          status: state.status,
-          title: state.title,
-          input: state.input,
-          content: state.content,
-          error: state.error,
-        },
+        state: { status: state.status, title: state.title, input: state.input, error: state.error },
       });
     }
   }
   return parts;
+}
+
+export function roleOf(msg: SessionMessage): string {
+  return msg.type === "user" ? "user" : "agent";
+}
+
+export function renderMessage(msg: SessionMessage, options: AutoMemoryOptions): string {
+  return clip(renderParts(toParts(msg), options).trim(), options.messageLimit);
 }
 
 const inFlight = new Map<string, Promise<void>>();
@@ -108,133 +108,79 @@ export async function handleIdle(
 ): Promise<void> {
   dbg(`handleIdle start sessionID=${sessionID}`);
   try {
-    const entry = loadState().sessions[sessionID];
+    if (!options.captureTranscripts) return;
 
     const session = await dbgAwait("session.get", client.session.get({ sessionID }));
-    dbg(
-      `session: ${JSON.stringify(
-        session ? { id: session.id, title: session.title, parentID: session.parentID } : session,
-      )}`,
-    );
     if (session?.parentID) {
       dbg("skip: subagent session");
       return;
     }
 
     const messages = (await dbgAwait("session.context", client.session.context({ sessionID }))) ?? [];
-    dbg(`messages: ${messages.length}`);
-
-    let kbSessionID = entry?.kbSessionID;
-    const logged = new Set(entry?.logged ?? []);
-    const newMessages = messages.filter((msg) => !logged.has(msg.id) && isReady(msg));
-    dbg(`newMessages: ${newMessages.length}`);
-    if (newMessages.length === 0) {
-      dbg("no new messages, return");
-      return;
-    }
-
-    const sessionName = session?.title || sessionID;
-    // Persist as we go, not once at the end: a timed-out log_message throws out
-    // of the loop, and an unsaved kbSessionID means the next idle opens a second
-    // KB session and re-logs everything into it.
-    const persist = () =>
-      commitSession(sessionID, { kbSessionID, logged: [...logged], name: sessionName });
-
-    const server = await dbgAwait("getMcp", getMcp(options));
-    if (kbSessionID === undefined) {
-      // Spawning the MCP server can take a while; re-read in case another
-      // process assigned this session an id since loadState().
-      kbSessionID = loadState().sessions[sessionID]?.kbSessionID;
-    }
-    if (kbSessionID === undefined) {
-      const text = await dbgAwait(
-        "start_logging_session",
-        server.callTool("start_logging_session", { name: sessionName }),
-      );
-      dbg(`start_logging_session => ${text}`);
-      const match = text.match(/#(\d+)/);
-      if (!match?.[1]) return;
-      kbSessionID = Number(match[1]);
-      persist();
-    }
-    dbg(`kbSessionID=${kbSessionID}`);
+    const newMessages = messages.filter((msg) => isReady(msg) && !isIndexed(msg.id));
+    dbg(`messages: ${messages.length}, new: ${newMessages.length}`);
 
     for (const msg of newMessages) {
-      const role = msg.type === "user" ? "user" : "agent";
-      const content = renderParts(toParts(msg), options);
-      if (!content.trim()) {
-        logged.add(msg.id);
-        persist();
-        continue;
-      }
-      const payload: Record<string, unknown> = {
-        role,
-        content: clip(content.trim(), options.messageLimit),
-        sessionId: kbSessionID,
-      };
-      let reply = await server.callTool("log_message", payload);
-
-      if (reply.includes("already closed")) {
-        dbg(`kbSessionID=${kbSessionID} was auto-closed, opening a replacement`);
-        const startText = await server.callTool("start_logging_session", { name: sessionName });
-        const match = startText.match(/#(\d+)/);
-        if (!match?.[1]) {
-          dbg(`could not reopen a session: ${startText.slice(0, 200)}`);
-          break;
-        }
-        kbSessionID = Number(match[1]);
-        payload.sessionId = kbSessionID;
-        persist();
-        reply = await server.callTool("log_message", payload);
-      }
-
-      if (reply.startsWith("❌")) {
-        dbg(`log_message failed for ${msg.id}: ${reply}`);
-        continue;
-      }
-      if (!reply.startsWith("📝")) {
-        dbg(`log_message unexpected reply for ${msg.id}: ${reply.slice(0, 200)}`);
-      }
-      logged.add(msg.id);
-      persist();
+      indexMessage(
+        { messageID: msg.id, sessionID, role: roleOf(msg), time: msg.time?.created },
+        renderMessage(msg, options),
+      );
     }
-    dbg(`logged ${logged.size} total`);
-
-    persist();
-    dbg("state saved");
   } catch (error) {
     dbg(`ERROR: ${(error as Error)?.message ?? error}`);
     dbg((error as Error)?.stack ?? "");
-    console.error("[auto-memory] failed to log session:", (error as Error)?.message ?? error);
+    console.error("[auto-memory] failed to index session:", (error as Error)?.message ?? error);
   }
 }
 
-export async function handleDeleted(sessionID: string, options: AutoMemoryOptions): Promise<void> {
+export async function handleDeleted(sessionID: string): Promise<void> {
   dbg(`handleDeleted sessionID=${sessionID}`);
   try {
-    const entry = loadState().sessions[sessionID];
-    if (entry?.kbSessionID === undefined) return;
-    const server = await getMcp(options);
-    await server.callTool("end_session", { sessionId: entry.kbSessionID });
-    // Re-read after the await, for the reason commitSession explains.
-    forgetSession(sessionID);
-    dbg(`ended kbSessionID=${entry.kbSessionID}`);
+    forgetSessionIndex(sessionID);
   } catch (error) {
     dbg(`ERROR (deleted): ${(error as Error)?.message ?? error}`);
   }
 }
 
+const BACKFILL_BATCH = 100;
+// Each plugin location loads its own copy of this module, so the in-flight run
+// is kept on globalThis to be shared by all of them.
+const BACKFILL_KEY = Symbol.for("opencode-auto-memory.backfill");
+const shared = globalThis as { [BACKFILL_KEY]?: Promise<void> };
+
 /**
- * Drain sessions this process touched. A one-shot `opencode run` exits before
- * the idle indexing finishes, so without this its transcript waits for the next
- * time the same session goes idle -- which for a throwaway run never happens.
+ * Index every message opencode has stored that the index lacks, so history from
+ * before the plugin (or from while it was not running) is searchable. Plugin
+ * instances that start together share one run, and it works in batches that
+ * yield, so the server is not blocked.
  */
-export async function flushSessions(
-  client: CaptureClient,
-  sessionIDs: Iterable<string>,
-  options: AutoMemoryOptions,
-): Promise<void> {
-  for (const sessionID of sessionIDs) {
-    await oncePerSession(sessionID, () => handleIdle(client, sessionID, options));
+export function backfill(options: AutoMemoryOptions): Promise<void> {
+  shared[BACKFILL_KEY] ??= indexStoredHistory(options).finally(() => {
+    delete shared[BACKFILL_KEY];
+  });
+  return shared[BACKFILL_KEY];
+}
+
+async function indexStoredHistory(options: AutoMemoryOptions): Promise<void> {
+  try {
+    const indexed = indexedMessageIDs();
+    const pending = mainSessionMessages().filter((row) => !indexed.has(row.id));
+    dbg(`backfill: ${pending.length} message(s)`);
+    for (let start = 0; start < pending.length; start += BACKFILL_BATCH) {
+      inTransaction(() => {
+        for (const { id, sessionID } of pending.slice(start, start + BACKFILL_BATCH)) {
+          const msg = readMessage(sessionID, id);
+          if (!msg || !isReady(msg)) continue;
+          indexMessage(
+            { messageID: id, sessionID, role: roleOf(msg), time: msg.time?.created },
+            renderMessage(msg, options),
+          );
+        }
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    dbg("backfill: done");
+  } catch (error) {
+    dbg(`backfill ERROR: ${(error as Error)?.message ?? error}`);
   }
 }

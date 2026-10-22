@@ -1,14 +1,14 @@
 {
   "name": "opencode-auto-memory",
-  "version": "2.1.0",
-  "description": "Indexes opencode sessions into the personal-knowledge MCP store and injects relevant memory into new sessions",
+  "version": "3.0.0",
+  "description": "Local notes and a full-text conversation index for opencode, in one SQLite file",
   "type": "module",
   "main": "dist/index.js",
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "bun build ./src/index.ts --outfile ./dist/index.js --target node",
+    "build": "bun build ./src/index.ts --outfile ./dist/index.js --target bun",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
@@ -24,8 +24,8 @@
     "opencode",
     "plugin",
     "memory",
-    "personal-knowledge",
-    "mcp"
+    "sqlite",
+    "fts5"
   ],
   "author": "RealGecko",
   "license": "MIT",

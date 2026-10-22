@@ -119,18 +119,14 @@ describe("renderToolPart", () => {
       input: { command: "echo hi" },
       content: [{ type: "text", text: "hi" }],
     },
-  };
+  } as MessagePart;
 
-  test("keeps the call and drops the output by default", () => {
+  test("keeps the call and never the output", () => {
     const rendered = renderToolPart(bash, DEFAULTS);
     expect(rendered).toContain("[tool: bash] echo");
     expect(rendered).toContain('input: {"command":"echo hi"}');
     expect(rendered).not.toContain("hi\n");
     expect(rendered).not.toContain("output:");
-  });
-
-  test("captures output when asked to", () => {
-    expect(renderToolPart(bash, { ...DEFAULTS, captureToolOutput: true })).toContain("output: hi");
   });
 
   test("keeps a clipped error reason (structured V2 error)", () => {
@@ -143,34 +139,19 @@ describe("renderToolPart", () => {
     expect(rendered).toContain("error: ");
     expect(rendered).toContain("[truncated 300 chars]");
   });
-
-  test("never records knowledge-base tool output", () => {
-    const part: MessagePart = {
-      type: "tool",
-      name: "personal-knowledge_search_knowledge",
-      state: {
-        status: "completed",
-        input: { query: "merge" },
-        content: [{ type: "text", text: "SECRET_RESULTS" }],
-      },
-    };
-    const rendered = renderToolPart(part, { ...DEFAULTS, captureToolOutput: true });
-    expect(rendered).toContain('input: {"query":"merge"}');
-    expect(rendered).not.toContain("SECRET_RESULTS");
-  });
 });
 
 describe("renderParts", () => {
-  test("skips synthetic and ignored text, redacts private spans", () => {
+  test("skips synthetic and ignored text, keeps reasoning, redacts private spans", () => {
     const parts: MessagePart[] = [
       { type: "text", text: "injected context", synthetic: true },
       { type: "text", text: "ignored", ignored: true },
       { type: "text", text: "token is <private>sk-1</private>" },
-      { type: "reasoning", text: "thinking" } as MessagePart,
+      { type: "reasoning", text: "thinking about password = hunter22" },
       { type: "tool", name: "bash", state: { status: "completed", title: "ls" } },
     ];
     const rendered = renderParts(parts, DEFAULTS);
-    expect(rendered).toBe("token is [REDACTED]\n\n[tool: bash] ls");
+    expect(rendered).toBe("token is [REDACTED]\n\nthinking about password = [redacted]\n\n[tool: bash] ls");
   });
 
   test("drops a fully private message body", () => {

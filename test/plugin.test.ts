@@ -10,6 +10,8 @@ import { SAVE_NUDGE } from "../src/kb.ts";
 
 const testDir = mkdtempSync(join(tmpdir(), "auto-memory-plugin-"));
 process.env.AUTO_MEMORY_DEBUG_PATH = join(testDir, "debug.log");
+process.env.AUTO_MEMORY_DB_PATH = join(testDir, "memory.db");
+process.env.AUTO_MEMORY_OPENCODE_DB = join(testDir, "missing-opencode.db");
 
 async function waitFor(check: () => boolean): Promise<void> {
   const deadline = Date.now() + 1_000;
@@ -25,44 +27,9 @@ type PromptHook = (event: {
   prompt: { text: string };
 }) => Promise<void>;
 
-const mcp = { transform: async () => {} };
+const tool = { transform: async () => {} };
 
 describe("V2 plugin lifecycle", () => {
-  test.each([undefined, true, false])("exposes KB tools directly when codemode is %s", async (codemode) => {
-    const servers = new Map([
-      ["personal-knowledge", { type: "local", command: ["kb"], disabled: true, codemode }],
-      ["other", { type: "local", command: ["other"], disabled: false, codemode: true }],
-    ]);
-    const context = {
-      options: { injectContext: false, keywordNudge: false },
-      location: { directory: "/w", project: { id: "p", directory: "/w", canonical: "/w" } },
-      mcp: {
-        transform: async (callback: Parameters<Plugin.Context["mcp"]["transform"]>[0]) => {
-          callback({
-            update: (name: string, update: (server: object) => void) => {
-              const server = servers.get(name);
-              if (server) update(server);
-            },
-          } as Parameters<typeof callback>[0]);
-        },
-      },
-      session: { hook: async () => {} },
-      event: { subscribe: async function* () {} },
-    };
-    const cleanup = await AutoMemoryPlugin.setup(context as unknown as Plugin.Context);
-    expect(servers.get("personal-knowledge")).toEqual({
-      type: "local", command: ["kb"], disabled: true, codemode: false,
-    });
-    expect(servers.get("other")).toEqual({
-      type: "local", command: ["other"], disabled: false, codemode: true,
-    });
-    await cleanup?.();
-    servers.delete("personal-knowledge");
-    const cleanupWithoutKb = await AutoMemoryPlugin.setup(context as unknown as Plugin.Context);
-    expect(servers.has("personal-knowledge")).toBe(false);
-    await cleanupWithoutKb?.();
-  });
-
   test("consumes live V2 events while capture is slow and drains trailing work", async () => {
     let contextCalls = 0;
     let release!: () => void;
@@ -72,7 +39,7 @@ describe("V2 plugin lifecycle", () => {
     let consumed!: () => void;
     const eventsConsumed = new Promise<void>((resolve) => { consumed = resolve; });
     const context = {
-      mcp,
+      tool,
       options: { injectContext: false, keywordNudge: false },
       location: { directory: "/w/", project: { id: "p", directory: "/w", canonical: "/w" } },
       session: {
@@ -130,7 +97,7 @@ describe("V2 plugin lifecycle", () => {
 
     const session = {
       hook: async (name: string, callback: PromptHook) => {
-        expect(name).toBe("prompt");
+        if (name !== "prompt") return;
         promptHook = callback;
       },
       get: async ({ sessionID }: { sessionID: string }) => ({
@@ -145,7 +112,7 @@ describe("V2 plugin lifecycle", () => {
     };
 
     const context = {
-      mcp,
+      tool,
       options: {
         injectContext: false,
         keywordNudge: true,
@@ -219,7 +186,7 @@ describe("V2 plugin lifecycle", () => {
     ];
 
     const context = {
-      mcp,
+      tool,
       options: { injectContext: false, keywordNudge: false },
       location: { directory: "/w", project: { id: "p", directory: "/w", canonical: "/w" } },
       session,
@@ -265,12 +232,12 @@ describe("V2 plugin lifecycle", () => {
     });
 
     const context = {
-      mcp,
+      tool,
       options: { injectContext: false, keywordNudge: false },
       location: { directory: "/w", project: { id: "p", directory: "/w", canonical: "/w" } },
       session: {
-        hook: async (_name: string, callback: PromptHook) => {
-          promptHook = callback;
+        hook: async (name: string, callback: PromptHook) => {
+          if (name === "prompt") promptHook = callback;
         },
         get: async ({ sessionID }: { sessionID: string }) => ({ id: sessionID }),
         context: async () => {
@@ -314,7 +281,7 @@ describe("V2 plugin lifecycle", () => {
     });
 
     const context = {
-      mcp,
+      tool,
       options: { injectContext: false, keywordNudge: false },
       location: { directory: "/w", project: { id: "p", directory: "/w", canonical: "/w" } },
       session: {

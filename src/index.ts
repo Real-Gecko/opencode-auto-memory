@@ -3,6 +3,7 @@ import { basename, resolve } from "node:path";
 import type { Plugin } from "@opencode/plugin";
 
 import {
+  backfill,
   handleDeleted,
   handleIdle,
   oncePerSession,
@@ -10,10 +11,12 @@ import {
 } from "./capture.ts";
 import { CaptureQueue } from "./capture-queue.ts";
 import { projectRootFrom, resolveOptions } from "./config.ts";
-import { buildKeywordPattern, hasSaveIntent, SAVE_NUDGE } from "./kb.ts";
+import { closeDb } from "./db.ts";
+import { closeOpencodeDb } from "./opencode-db.ts";
+import { buildKeywordPattern, hasSaveIntent, MEMORY_GUIDE, SAVE_NUDGE } from "./kb.ts";
 import { buildInjection } from "./inject.ts";
 import { dbg, setLogLimit } from "./logger.ts";
-import { closeMcp } from "./mcp.ts";
+import { registerTools } from "./tools.ts";
 
 /** Wait for a quiet period after streaming content before capturing. */
 const CAPTURE_DEBOUNCE_MS = 500;
@@ -26,13 +29,10 @@ const CAPTURE_DEBOUNCE_MS = 500;
 export default {
   id: "auto-memory",
   async setup(ctx: Plugin.Context) {
-    await ctx.mcp.transform((editor) => {
-      editor.update("personal-knowledge", (server) => {
-        server.codemode = false;
-      });
-    });
-
     const options = resolveOptions(ctx.options);
+    await registerTools(ctx, options);
+    if (options.captureTranscripts) void backfill(options);
+
     setLogLimit(options.debugMaxBytes);
     const projectRoot = projectRootFrom(ctx.location.project.directory, ctx.location.directory);
     const projectName = basename(projectRoot);
@@ -118,7 +118,7 @@ export default {
         }
 
         const started = Date.now();
-        const block = await buildInjection(projectName, userText, options);
+        const block = buildInjection(projectName, userText, options);
         if (!block) {
           dbg(`prompt: nothing to inject (${Date.now() - started}ms)`);
           return;
@@ -130,6 +130,16 @@ export default {
         dbg(`prompt ERROR: ${(error as Error)?.message ?? error}`);
       }
     });
+
+    // The guide is only useful where the agent can actually call the tools, so
+    // requests without them (restricted agents, Code Mode) are left alone.
+    if (options.memoryGuide) {
+      await ctx.session.hook("context", (event) => {
+        if ("memory_search" in event.tools) {
+          event.system.push({ type: "text", text: MEMORY_GUIDE });
+        }
+      });
+    }
 
     const controller = new AbortController();
     void (async () => {
@@ -198,8 +208,8 @@ export default {
             if (timer !== undefined) clearTimeout(timer);
             captureTimers.delete(sessionID);
             touched.delete(sessionID);
-            // End the KB session only after its running capture has finished.
-            queue.enqueue(sessionID, () => handleDeleted(sessionID, options));
+            // Drop its index only after its running capture has finished.
+            queue.enqueue(sessionID, () => handleDeleted(sessionID));
           }
         }
       } catch (error) {
@@ -213,7 +223,8 @@ export default {
       for (const timer of captureTimers.values()) clearTimeout(timer);
       captureTimers.clear();
       await flush();
-      closeMcp();
+      closeDb();
+      closeOpencodeDb();
     };
   },
 };

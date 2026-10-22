@@ -2,16 +2,14 @@ import { basename, join } from "node:path";
 import { homedir } from "node:os";
 
 /**
- * Default paths match the pre-package versions of this plugin, so existing state
- * carries over. Each is resolved per call and can be redirected with an
- * environment variable: tests must be able to point them somewhere harmless
- * without relying on $HOME, which bun resolves once at startup and does not
- * re-read.
+ * Each path is resolved per call and can be redirected with an environment
+ * variable: tests must be able to point them somewhere harmless without relying
+ * on $HOME, which bun resolves once at startup and does not re-read.
  */
-export function statePath(): string {
+export function dbPath(): string {
   return (
-    process.env.AUTO_MEMORY_STATE_PATH ??
-    join(homedir(), ".config", "opencode", "auto-memory.json")
+    process.env.AUTO_MEMORY_DB_PATH ??
+    join(homedir(), ".local", "share", "opencode-auto-memory", "memory.db")
   );
 }
 
@@ -22,49 +20,19 @@ export function debugPath(): string {
   );
 }
 
-/**
- * fastembed caches its ~128MB ONNX model in ./local_cache, relative to the
- * server's cwd, so an unpinned cwd leaves a copy in every directory opencode
- * was started from.
- */
-export function serverCwd(): string {
-  return (
-    process.env.AUTO_MEMORY_SERVER_CWD ??
-    join(homedir(), ".cache", "opencode-personal-knowledge")
-  );
-}
-
 export interface AutoMemoryOptions {
-  /** Command that starts the personal-knowledge MCP server. */
-  serverCommand: string;
-  /**
-   * Per-request MCP timeout. A cold start loads the embedding model before
-   * answering, and log_message embeds the whole message; 30s was not enough.
-   */
-  requestTimeoutMs: number;
-  /** Max characters stored per message. */
+  /** Index session messages for `session_search`. Recall and the save reminder do not depend on it. */
+  captureTranscripts: boolean;
+  /** Add a short how-to-use-memory section to the system prompt. */
+  memoryGuide: boolean;
+  /** Max characters indexed per message. */
   messageLimit: number;
   /** Max characters of a tool call's JSON input. */
   toolInputLimit: number;
   /** Max characters of a failed tool call's error reason. */
   toolErrorLimit: number;
-  /**
-   * Store tool output too. Off by default: output was 79% of the store and is
-   * almost never what a later search is looking for.
-   */
-  captureToolOutput: boolean;
-  /** Max characters of tool output when captureToolOutput is on. */
-  toolOutputLimit: number;
-  /** Prepend relevant knowledge-base entries to the first message of a session. */
+  /** Prepend relevant notes to the first message of a session. */
   injectContext: boolean;
-  /**
-   * Also run a semantic search for the first message. Keyword search hits sqlite
-   * directly; semantic search waits on the embedding model and shares its index
-   * with logged transcripts, so it is the noisier of the two.
-   */
-  injectSemantic: boolean;
-  /** Give up on injection after this long so a cold model never stalls a turn. */
-  injectTimeoutMs: number;
   /** Max entries listed per injected section. */
   maxInjectEntries: number;
   /** Max characters of each injected entry's excerpt. */
@@ -74,7 +42,7 @@ export interface AutoMemoryOptions {
   /** Extra regex sources appended to the built-in save-intent patterns. */
   keywordPatterns: string[];
   /**
-   * Best-effort redaction of obviously secret values before storage. Only values
+   * Best-effort redaction of obviously secret values before indexing. Only values
    * sitting next to a secret-like name (`token`, `password`, `api_key`, ...),
    * bearer tokens, JWTs and private key blocks are redacted; unqualified
    * high-entropy strings are left alone to avoid destroying legit memory.
@@ -85,16 +53,12 @@ export interface AutoMemoryOptions {
 }
 
 export const DEFAULTS: AutoMemoryOptions = {
-  serverCommand: "opencode-personal-knowledge",
-  requestTimeoutMs: 120_000,
+  captureTranscripts: true,
+  memoryGuide: true,
   messageLimit: 32_000,
   toolInputLimit: 1_000,
   toolErrorLimit: 200,
-  captureToolOutput: false,
-  toolOutputLimit: 2_000,
   injectContext: true,
-  injectSemantic: true,
-  injectTimeoutMs: 5_000,
   maxInjectEntries: 5,
   injectExcerptChars: 220,
   keywordNudge: true,
@@ -104,21 +68,18 @@ export const DEFAULTS: AutoMemoryOptions = {
 };
 
 const NUMBER_KEYS = [
-  "requestTimeoutMs",
   "messageLimit",
   "toolInputLimit",
   "toolErrorLimit",
-  "toolOutputLimit",
-  "injectTimeoutMs",
   "maxInjectEntries",
   "injectExcerptChars",
   "debugMaxBytes",
 ] as const satisfies ReadonlyArray<keyof AutoMemoryOptions>;
 
 const BOOLEAN_KEYS = [
-  "captureToolOutput",
+  "captureTranscripts",
+  "memoryGuide",
   "injectContext",
-  "injectSemantic",
   "keywordNudge",
   "autoRedact",
 ] as const satisfies ReadonlyArray<keyof AutoMemoryOptions>;
@@ -141,9 +102,6 @@ export function resolveOptions(options?: Record<string, unknown>): AutoMemoryOpt
   for (const key of BOOLEAN_KEYS) {
     const value = options[key];
     if (typeof value === "boolean") resolved[key] = value;
-  }
-  if (typeof options.serverCommand === "string" && options.serverCommand.trim()) {
-    resolved.serverCommand = options.serverCommand.trim();
   }
   if (Array.isArray(options.keywordPatterns)) {
     resolved.keywordPatterns = options.keywordPatterns.filter(
